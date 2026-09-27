@@ -17,6 +17,7 @@ import json
 import logging
 import mimetypes
 import os
+import re
 import secrets
 import threading
 import time
@@ -32,7 +33,8 @@ from pydantic import ValidationError
 from . import netinfo, registry
 from .gitdata import GitError, PathNotInReview, allowed_paths, file_view
 from .mailbox import Mailbox, new_question_id, utc_now, write_private
-from .models import Anchor, FindingsFile, InboxRow, findings_digest
+from .models import Anchor, FindingsFile, InboxRow, Walkthrough, findings_digest
+from .walkthrough import Served, served_path, walkthrough_path
 
 log = logging.getLogger(__name__)
 
@@ -40,6 +42,7 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 COMPONENT = "review-viewer"
 MAX_QUESTION_CHARS = 8000
 MAX_BODY_BYTES = 64 * 1024
+STEP_ID_RE = re.compile(r"^[a-z0-9-]{1,40}$")
 REJECT_LOG_INTERVAL = 60.0
 STOP_MESSAGES = {
     "stop": "viewer stopped by stop --box",
@@ -68,10 +71,26 @@ class TargetState:
     findings: FindingsFile
     mailbox: Mailbox
     allowed: set[str]
+    pr: dict | None = None
+    notice: str | None = None
+    stats: dict | None = None
 
     @property
     def slug(self) -> str:
         return self.findings.target.slug
+
+    def walkthrough(self) -> Walkthrough | None:
+        """The walkthrough `walkthrough put` last wrote, or None. It was
+        checked when it was put; a file that no longer parses is treated as
+        absent rather than served half-read."""
+        path = walkthrough_path(self.mailbox.dir)
+        try:
+            return Walkthrough.model_validate_json(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError) as exc:
+            log.warning("walkthrough for %s does not parse: %s", self.slug, exc)
+            return None
 
 
 @dataclass
@@ -268,6 +287,12 @@ def make_handler(viewer: Viewer):
                     if rest.endswith("/file"):
                         state = self._target(rest[: -len("/file")])
                         return self._file(state, q.get("path", ""))
+                    if rest.endswith("/walkthrough"):
+                        state = self._target(rest[: -len("/walkthrough")])
+                        wt = state.walkthrough()
+                        if wt is None:
+                            raise _Reject(404, "no walkthrough yet")
+                        return self._json(wt.model_dump(mode="json"))
                     state = self._target(rest)
                     return self._json({
                         "findings": state.findings.model_dump(mode="json"),
@@ -275,6 +300,9 @@ def make_handler(viewer: Viewer):
                         "decisions": state.mailbox.read_decisions(),
                         "questions": [r for r in state.mailbox.read_inbox()
                                       if r.get("kind") == "question"],
+                        "pr": state.pr,
+                        "notice": state.notice,
+                        "stats": state.stats,
                     })
             if method == "POST":
                 if route == "/api/ask":
@@ -314,11 +342,23 @@ def make_handler(viewer: Viewer):
                 anchor = Anchor.model_validate(body["anchor"]) if body.get("anchor") else None
             except ValidationError:
                 raise _Reject(400, "invalid anchor")
+            step_id = body.get("step_id")
+            if step_id is not None:
+                if not isinstance(step_id, str) or not STEP_ID_RE.match(step_id):
+                    raise _Reject(400, "invalid step_id")
+                wt = state.walkthrough()
+                if wt is None or not any(s.id == step_id for s in wt.steps):
+                    raise _Reject(404, "unknown step")
+            explain = body.get("explain") is True
+            if explain and anchor is None:
+                raise _Reject(400, "explain needs the block's anchor")
             row = InboxRow(id=new_question_id(), ts=utc_now(), target=state.slug,
-                           kind="question", finding_id=finding_id, anchor=anchor, text=text)
+                           kind="question", finding_id=finding_id, anchor=anchor, text=text,
+                           step_id=step_id, explain=explain)
             state.mailbox.append_inbox(row)
-            about = f"finding {finding_id}" if finding_id else (
-                f"{anchor.path}:{anchor.line_start}" if anchor else "the review")
+            about = f"block {anchor.path}:{anchor.line_start}" if explain else f"finding {finding_id}" if finding_id else (
+                f"step {step_id}" if step_id else (
+                    f"{anchor.path}:{anchor.line_start}" if anchor else "the review"))
             log_event(COMPONENT, "question", f"question {row.id} on {about}",
                       session_id=viewer.session_id, target=state.slug,
                       finding_id=finding_id, chars=len(text))
@@ -350,12 +390,18 @@ def make_handler(viewer: Viewer):
 
 
 def build_viewer(findings: list[tuple[FindingsFile, Path]], *, agent: str, session_id: str,
-                 idle_minutes: float) -> Viewer:
+                 idle_minutes: float, meta: dict[str, dict] | None = None) -> Viewer:
+    """`meta` maps a target slug to `{"pr", "notice", "stats"}`: PR metadata
+    for the page header, the note that a review exists for other commits, and
+    the measured badges (`stats.change_stats`). None goes into findings.json."""
     targets: dict[str, TargetState] = {}
     for ff, box in findings:
         mailbox = Mailbox(box)
         mailbox.create()
-        targets[ff.target.slug] = TargetState(ff, mailbox, allowed_paths(ff.target, ff))
+        extra = (meta or {}).get(ff.target.slug, {})
+        targets[ff.target.slug] = TargetState(ff, mailbox, allowed_paths(ff.target, ff),
+                                              pr=extra.get("pr"), notice=extra.get("notice"),
+                                              stats=extra.get("stats"))
     return Viewer(targets=targets, token=secrets.token_urlsafe(32), agent=agent,
                   session_id=session_id, idle_minutes=idle_minutes)
 
@@ -391,6 +437,9 @@ def publish(viewer: Viewer, urls: list[tuple[str, str]]) -> None:
         write_private(box.token_file, viewer.token + "\n")
         write_private(box.open_html, open_page_html(urls[0][0], viewer.token))
         write_private(box.server_json, json.dumps(record, indent=2) + "\n")
+        # What `walkthrough put` checks against. Kept after exit: no secret.
+        write_private(served_path(box.dir),
+                      Served(state.findings, state.pr, state.notice, state.stats).to_json())
     registry.register(os.getpid(), [s.mailbox.dir.resolve() for s in viewer.targets.values()])
 
 

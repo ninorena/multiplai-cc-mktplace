@@ -178,3 +178,156 @@ def test_plain_diff_slug_from_awkward_repo_name(tmp_path):
 def test_non_ascii_path_is_listed_unquoted(tmp_path):
     target = _repo(tmp_path / "r", {"é.txt": "1\n"}, {"é.txt": "2\n"})
     assert diff_target(target.repo_path, "main~1..main").files_changed == ["é.txt"]
+
+
+# --- target resolution --------------------------------------------------------------
+
+import json  # noqa: E402
+import os  # noqa: E402
+import stat  # noqa: E402
+
+from fixture_repo import build_remote  # noqa: E402
+from review_viewer.gitdata import (  # noqa: E402
+    TargetError, parse_target, resolve_target, sanitize_slug)
+
+
+@pytest.fixture(scope="module")
+def remote(tmp_path_factory):
+    return build_remote(tmp_path_factory.mktemp("remote"))
+
+
+@pytest.mark.parametrize("text,kind,fields", [
+    ("123", "pr", {"number": 123, "owner": None}),
+    ("#9", "pr", {"number": 9}),
+    ("https://github.com/o/r/pull/123", "pr", {"owner": "o", "repo": "r", "number": 123}),
+    ("https://github.com/o/r/pull/123/files", "pr", {"owner": "o", "repo": "r", "number": 123}),
+    ("o/r#45", "pr", {"owner": "o", "repo": "r", "number": 45}),
+    ("feature-x", "branch", {}),
+    ("feat/a.b", "branch", {}),
+    ("a..b", "range2", {"left": "a", "right": "b"}),
+    ("main..", "range2", {"left": "main", "right": "HEAD"}),
+    ("a...b", "range3", {"left": "a", "right": "b"}),
+    ("", "path", {}),
+])
+def test_parse_target_table(text, kind, fields, tmp_path):
+    spec = parse_target(text, cwd=tmp_path)
+    assert spec.kind == kind
+    for k, v in fields.items():
+        assert getattr(spec, k) == v, k
+
+
+def test_parse_target_directory_beats_range(tmp_path):
+    (tmp_path / "wt").mkdir()
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    spec = parse_target("../wt", cwd=sub)
+    assert spec.kind == "path" and spec.path == (tmp_path / "wt").resolve()
+    assert parse_target(str(tmp_path), cwd=sub).kind == "path"
+
+
+def test_branch_base_is_the_merge_base_not_mains_tip(remote):
+    r = resolve_target(parse_target("feature"), remote["work"])
+    t = r.target
+    # The local branch wins over origin/feature, so the unpushed commit shows too.
+    assert t.head_sha == remote["feature_local"]
+    assert t.base_sha == remote["head"] != remote["main_tip"]
+    assert t.files_changed == ["app/feature.py"]
+    assert t.slug == sanitize_slug(f"{remote['work'].name}--feature") == "work--feature"
+    assert r.pr is None
+
+
+def test_origin_branch_when_no_local_branch(remote):
+    t = resolve_target(parse_target("feature"), remote["clone"]).target
+    assert t.head_sha == remote["feature_pushed"]
+    assert t.base_sha == remote["head"]
+
+
+def test_worktree_shows_only_unpushed_commits(remote):
+    t = resolve_target(parse_target(str(remote["work"])), None).target
+    assert (t.base_sha, t.head_sha) == (remote["feature_pushed"], remote["feature_local"])
+    assert t.files_changed == ["app/feature.py"]
+    assert t.slug == "work--feature--unpushed"
+
+
+def test_worktree_without_upstream_uses_the_default_branch(remote, tmp_path):
+    wt = tmp_path / "wt"
+    subprocess.run(["git", "-C", str(remote["work"]), "worktree", "add", "-q", "--detach",
+                    str(wt), remote["feature_pushed"]], check=True)
+    t = resolve_target(parse_target("", cwd=wt), None, cwd=wt).target
+    assert (t.base_sha, t.head_sha) == (remote["head"], remote["feature_pushed"])
+
+
+def test_worktree_with_nothing_unpushed_says_so(remote, tmp_path):
+    with pytest.raises(TargetError, match="not pushed"):
+        resolve_target(parse_target(str(remote["clone"])), None)
+
+
+def test_three_dot_range_uses_the_merge_base(remote):
+    t = resolve_target(parse_target("main...feature"), remote["work"]).target
+    assert (t.base_sha, t.head_sha) == (remote["head"], remote["feature_local"])
+    two = resolve_target(parse_target("main..feature"), remote["work"]).target
+    assert (two.base_sha, two.head_sha) == (remote["main_tip"], remote["feature_local"])
+    assert "README.md" in two.files_changed and "README.md" not in t.files_changed
+
+
+def _fake_gh(tmp_path, monkeypatch, payload: dict) -> Path:
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    (tmp_path / "pr.json").write_text(json.dumps(payload))
+    log = tmp_path / "gh.argv"
+    script = bindir / "gh"
+    script.write_text(f"#!/bin/sh\nprintf '%s\\n' \"$@\" > '{log}'\ncat '{tmp_path / 'pr.json'}'\n")
+    script.chmod(script.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    return log
+
+
+def _refs(repo) -> str:
+    return subprocess.run(["git", "-C", str(repo), "for-each-ref"], capture_output=True,
+                          text=True, check=True).stdout
+
+
+def test_pr_resolves_and_fetches_only_objects(remote, tmp_path, monkeypatch):
+    clone = tmp_path / "clone"
+    subprocess.run(["git", "clone", "-q", "--no-local", str(remote["origin"]), str(clone)], check=True)
+    log = _fake_gh(tmp_path, monkeypatch, {
+        "number": 7, "title": "Add PR module", "author": {"login": "alice"},
+        "url": "https://github.com/o/r/pull/7", "headRefOid": remote["pr_head"],
+        "baseRefOid": remote["main_tip"], "headRefName": "pr-branch", "baseRefName": "main",
+        "body": "Body text"})
+    before = _refs(clone)
+    missing = subprocess.run(["git", "-C", str(clone), "cat-file", "-e",
+                              f"{remote['pr_head']}^{{commit}}"], capture_output=True)
+    assert missing.returncode != 0, "the clone must start without the PR head"
+    r = resolve_target(parse_target("7"), clone)
+    assert (r.target.base_sha, r.target.head_sha) == (remote["head"], remote["pr_head"])
+    assert r.target.files_changed == ["app/pr.py"]
+    assert r.target.slug == "clone--pr-7" and r.target.label == "clone PR #7"
+    assert r.pr.title == "Add PR module" and r.pr.author == "alice"
+    assert _refs(clone) == before, "the fetch must not create or move any ref"
+    argv = log.read_text().split("\n")
+    assert argv[:2] == ["pr", "view"] and argv[2] == "7" and "--repo" not in argv
+
+
+def test_pr_url_passes_repo_and_needs_a_matching_clone(remote, tmp_path, monkeypatch):
+    log = _fake_gh(tmp_path, monkeypatch, {
+        "headRefOid": remote["pr_head"], "baseRefOid": remote["main_tip"],
+        "baseRefName": "main"})
+    r = resolve_target(parse_target("o/r#7"), remote["clone"])
+    assert r.target.head_sha == remote["pr_head"]
+    assert "--repo\no/r" in log.read_text()
+    # No --repo, and the working directory's origin is not o/r.
+    with pytest.raises(TargetError, match="pass --repo"):
+        resolve_target(parse_target("https://github.com/o/r/pull/7"), None,
+                       cwd=remote["clone"])
+
+
+def test_pr_without_gh_names_gh(remote, monkeypatch):
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    with pytest.raises(TargetError, match="GitHub CLI"):
+        resolve_target(parse_target("7"), remote["clone"])
+
+
+def test_unknown_branch_is_a_clear_error(remote):
+    with pytest.raises(TargetError, match="no branch 'nope'"):
+        resolve_target(parse_target("nope"), remote["work"])

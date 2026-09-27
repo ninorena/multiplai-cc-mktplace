@@ -86,7 +86,7 @@ uv run --directory ${CLAUDE_PLUGIN_ROOT}/skills/review/scripts \
 ```
 
 Without `--out`, output goes to the workspace's `INBOX/reviews/` when there is
-one, otherwise `./reviews/`. The first stdout line, `out: <dir>`, says which;
+one, otherwise `~/.multiplai/reviews/` — never the repository's working tree. The first stdout line, `out: <dir>`, says which;
 tell the user.
 
 Each target gets `<out>/<slug>/` with `progress.log`. While the run is going,

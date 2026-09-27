@@ -17,6 +17,113 @@ time, not derived from a tag.
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-09-26
+
+### Added
+
+- **`review-viewer` opens a PR, a branch, your unpushed commits or a commit
+  range, and walks you through the change.** Give it a PR number or URL,
+  `owner/repo#N`, a branch name, a worktree path, `a..b` or `a...b`. A PR or
+  branch is shown against its merge-base, the same commits
+  `/multiplai-dev:review` would review. A worktree shows only the commits not
+  yet pushed to its upstream.
+- **A written walkthrough of the change.** The Claude Code session reads the
+  commits and the whole diff and writes an overview and ordered reviews: what the change is for, the core change, its
+  callers, tests, then config and generated files. Each review points at the
+  lines it explains; clicking it jumps the code there, and `[` / `]` move
+  between reviews. Reviews appear while the session is still writing them. A
+  review can carry a mermaid diagram when the change alters a flow or a data
+  shape.
+- **Review findings load when a review of the same commits exists**, and each
+  entry on the Reviews tab shows the findings in its code. A review of an older head of the same
+  PR or branch is named in a banner and not loaded.
+- The page header shows a PR's title, author and GitHub link.
+- **The sidebar can be resized.** Drag the line between it and the code, or
+  focus it and use the arrow keys; double-click resets it. The width is
+  remembered in that browser.
+- **Summary, Reviews and Findings tabs.** Summary shows the overview, the
+  PR description, and badges for judging the change at a glance. Some badges
+  are measured from git and GitHub: files and lines changed, size (small up
+  to 400 lines, large past 1000 or 30 files, not counting lock files), tests
+  changed against code, commit hygiene, TODOs and lock files added, and for
+  a PR its checks, merge conflicts, draft and review state. The rest are
+  the session's own assessments: whether the commit messages explain the
+  change, and whether the new code is tested. Click a badge for its
+  reasoning. Reviews holds the walkthrough steps. Clicking a file there
+  opens the review that explains it, and a review's files are marked in the
+  sidebar.
+- **A 💡 button above every block of changed lines** asks the session to
+  explain just that block. The answer appears in a strip above the block and
+  is still there after a reload. Nothing is explained until you ask, so no
+  tokens are spent on blocks you already understand. "Follow up" puts the
+  block into the message box. These explanations stay out of the chat.
+- **Questions and answers are a chat in the footer.** Collapsed, it is a
+  one-line message box. A spinner beside it shows while the session is
+  answering, and a dot marks answers you have not read. Clicking the box
+  opens the whole conversation above it, oldest first. Each message is
+  labelled with what it was about: a finding, a review, lines, or the whole
+  change. Esc or clicking elsewhere collapses it. Clicking a code
+  line adds its reference without opening the chat, so more lines can be
+  picked; typing opens it. Answers no longer appear in the right-hand panel.
+- Clicking a line or block adds a reference only once. A reference to lines
+  that overlap or touch one already in the box widens it: a line and then its
+  block leave one reference. The label above the box appears only when the
+  message will be linked to the open review or finding.
+- **The message box is a footer, always in view.** Type `@` for a list of
+  the changed files, and add `:12` or `:12-20` for lines. Clicking an added,
+  removed or changed line adds its whole block of changed lines as a
+  reference, which you can edit. A block that only removes lines is written
+  `@path:base:40-52`. The first reference with lines is sent with the
+  question.
+- **Unchanged lines fold away, as on GitHub.** A file opens showing its
+  changes with three lines around each, plus any cited or picked lines; the
+  rest folds into a bar that shows all of it, or 20 lines at a time from
+  either end. Jumping to lines inside a fold opens it.
+- **Scrolling past the end of a file opens the next one**, and past the top
+  the previous one, in the sidebar's order; a bar at the bottom names the
+  next file and can be clicked. The fling that reaches the end does not count:
+  it takes a fresh push. The open file is highlighted in the sidebar and kept
+  in view there.
+
+### Changed
+
+- For a PR target, `review-viewer` now runs `gh pr view`, and fetches the
+  PR's commits from `origin` when the clone does not have them (objects only;
+  no branch or remote-tracking ref is created). `--fetch` runs `git fetch
+  origin` first. Other targets still make no network call; the page also
+  loads mermaid from cdnjs.
+- Diff colours follow GitHub's. Added lines are green and removed lines red,
+  with a darker line-number cell, and removed lines are no longer struck
+  through. Lines a finding cites get a blue bar in the margin and are never
+  recoloured, so a cited added line stays green. Lines a review points at
+  flash when you jump to them.
+- The changed-files list groups files under their directory and shows each
+  file by name; a long directory is shortened to `…/<last two folders>/`. Hover
+  a name or a directory for its full path. The filter still matches full
+  paths.
+
+### Fixed
+
+- **`review` and `review-viewer` no longer write into the repository you run
+  them from.** Without a workspace `INBOX/`, a review went to `./reviews/`
+  and a viewer's files to `./review-viewer/`, which is usually the working
+  tree of the repository under review. Both now go under `~/.multiplai/`
+  (`reviews/`, `review-viewer/`). `--out` and `--reviews-dir` still override
+  it.
+- **`review-viewer`'s three panes now scroll on their own.** On a long file the
+  whole page scrolled instead, so jumping to a finding or a step's lines could
+  leave them off screen.
+- **The right-hand panel no longer scrolls sideways.** A wide table or a
+  long code span in a PR description could push the whole panel's text out
+  of view. Wide tables and images now scroll inside their own box, and long
+  words wrap.
+- The files no review explains are listed on the Summary tab. On the
+  Reviews tab they sat between the list of reviews and the one you clicked,
+  so every review looked like it said "Not explained". Clicking a review now
+  scrolls its text into view.
+- The Summary, Reviews and Findings tabs stay at the top of the right-hand
+  panel while it scrolls.
+
 ## [0.18.0] - 2026-09-25
 
 ### Added

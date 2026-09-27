@@ -30,7 +30,13 @@ SUBCOMMANDS = ("review", "batch", "rollup", "resume", "post")
 
 
 def default_out() -> Path:
-    """`<workspace>/INBOX/reviews` when the workspace has an INBOX, else `./reviews`."""
+    """`<workspace>/INBOX/reviews` when the workspace has an INBOX, else
+    `~/.multiplai/reviews`.
+
+    Never `./reviews`: the directory the user runs from is usually the
+    repository under review, and the output would land in its working tree.
+    review-viewer's `default_reviews_dir()` makes the same choice; they must
+    agree, because the viewer finds a review by looking here."""
     config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
     if config_dir:
         marker = Path(config_dir) / ".workspace"
@@ -40,7 +46,7 @@ def default_out() -> Path:
             workspace = None
         if workspace and (workspace / "INBOX").is_dir():
             return workspace / "INBOX" / "reviews"
-    return Path.cwd() / "reviews"
+    return Path.home() / ".multiplai" / "reviews"
 
 
 def _trust_flag(p: argparse.ArgumentParser) -> None:
@@ -61,7 +67,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--session-id", default="", help="Claude Code session id, for log correlation")
     parser.add_argument("--out", default=None,
-                        help="Output directory (default: <workspace>/INBOX/reviews if it exists, else ./reviews)")
+                        help="Output directory (default: <workspace>/INBOX/reviews if it exists, "
+                             "else ~/.multiplai/reviews)")
     # The same two flags are accepted after the subcommand too
     # (`review --out DIR`). SUPPRESS keeps an absent one from overwriting the
     # value given before the subcommand.

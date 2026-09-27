@@ -7,12 +7,13 @@
     pending        print questions and decisions that have no final reply yet
     list           show the live viewers this user can reach
     stop           stop one viewer (--box) or all of them (--all)
+    walkthrough    put: check and publish the session's walkthrough; status: what is uncovered
     validate       check findings files against the v1 contract
-    export-schema  write the v1 JSON Schema
+    export-schema  write the findings and walkthrough v1 JSON Schemas
 
 stdout is a contract: `serve` prints the `open:` line, the reference URLs, the
-mailboxes, the Monitor command and the pending command, then nothing per
-request. Diagnostics go to
+mailboxes, the Monitor command, the pending command and one `walkthrough:`
+line per mailbox, then nothing per request. Diagnostics go to
 the logger, never to print().
 """
 
@@ -24,19 +25,22 @@ import os
 import shlex
 import signal
 import sys
+import logging
 import time
 from pathlib import Path
 
 from multiplai_core.log_utils import log_event, setup_logging
 from pydantic import ValidationError
 
-from . import netinfo, registry, server
-from .gitdata import GitError, diff_findings, diff_target
+from . import netinfo, registry, server, stats, walkthrough
+from .gitdata import (GitError, Resolved, TargetError, TargetSpec, diff_findings, parse_target,
+                      resolve_target)
 from .mailbox import MAX_ROW_BYTES, Mailbox, MailboxError, utc_now
-from .models import (SCHEMA_PATH, FindingsFile, OutboxRow, findings_digest, load_findings,
-                     schema_text)
+from .models import (SCHEMA_PATH, WALKTHROUGH_SCHEMA_PATH, FindingsFile, OutboxRow,
+                     findings_digest, load_findings, schema_text, walkthrough_schema_text)
 
 COMPONENT = "review-viewer"
+log = logging.getLogger(__name__)
 EXIT_USAGE = 2
 EXIT_OTHER_SESSION = 3
 MONITOR_TIMEOUT_MS = 1800000
@@ -58,7 +62,12 @@ def invocation_path(value: str) -> Path:
 
 
 def output_root() -> Path:
-    """Workspace INBOX/ if there is one, else the directory the user ran from."""
+    """Workspace INBOX/ if there is one, else `~/.multiplai`.
+
+    Never the directory the user ran from: that is usually the repository
+    being reviewed, and the output would land in its working tree. The
+    review skill's `default_out()` makes the same choice; they must agree,
+    because `find_review()` looks where the review skill writes."""
     cfg = os.environ.get("CLAUDE_CONFIG_DIR")
     if cfg:
         marker = Path(cfg) / ".workspace"
@@ -68,29 +77,112 @@ def output_root() -> Path:
             root = None
         if root and (root / "INBOX").is_dir():
             return root / "INBOX"
-    return invocation_path(".")
+    return Path.home() / ".multiplai"
 
 
 # --- serve --------------------------------------------------------------------
 
 
-def _load_targets(args) -> list[tuple[FindingsFile, Path]] | int:
-    loaded: list[tuple[FindingsFile, Path]] = []
-    if args.repo or args.range:
-        if not (args.repo and args.range) or args.findings:
-            print("plain-diff mode takes --repo <path> --range <base>..<head> and no findings files",
+def default_reviews_dir() -> Path:
+    """Where the review skill writes by default: the workspace `INBOX/reviews`,
+    else `~/.multiplai/reviews`."""
+    return output_root() / "reviews"
+
+
+def find_review(target, dirs: list[Path]) -> tuple[str, Path | None, FindingsFile | None]:
+    """Look for a review of these commits under `<dir>/*/findings.json`.
+
+    ("match", path, findings) when one names the same base and head;
+    ("stale", path, findings) when one has the same slug but other commits;
+    ("none", None, None) otherwise. Newest file wins within each kind.
+    """
+    candidates: list[Path] = []
+    for d in dirs:
+        candidates.extend(p for p in Path(d).glob("*/findings.json") if p.is_file())
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    stale: tuple[Path, FindingsFile] | None = None
+    for path in candidates:
+        try:
+            ff = load_findings(path)
+        except (OSError, ValidationError) as exc:
+            log.warning("skipping %s while looking for a review: %s", path, exc)
+            continue
+        t = ff.target
+        if (t.base_sha, t.head_sha) == (target.base_sha, target.head_sha):
+            return "match", path, ff
+        if stale is None and t.slug == target.slug:
+            stale = (path, ff)
+    if stale:
+        return "stale", stale[0], stale[1]
+    return "none", None, None
+
+
+def _resolve_for_serve(args) -> Resolved | int:
+    cwd = invocation_path(".")
+    repo = invocation_path(args.repo) if args.repo else None
+    if args.range is not None:
+        if args.target is not None:
+            print("give --target or --range, not both", file=sys.stderr)
+            return EXIT_USAGE
+        if not args.repo:
+            print("--range needs --repo <path>", file=sys.stderr)
+            return EXIT_USAGE
+        if ".." not in args.range:
+            print(f"cannot read the diff: expected <base>..<head>, got {args.range!r}",
                   file=sys.stderr)
             return EXIT_USAGE
-        try:
-            target = diff_target(invocation_path(args.repo), args.range)
-        except (GitError, ValueError) as exc:
-            print(f"cannot read the diff: {exc}", file=sys.stderr)
+        left, right = args.range.split("..", 1)
+        spec = TargetSpec("range2", args.range, left=left or "HEAD", right=right or "HEAD")
+    elif args.target is not None:
+        spec = parse_target(args.target, cwd=cwd)
+    else:
+        spec = parse_target("", cwd=repo or cwd)
+    try:
+        return resolve_target(spec, repo, base_branch=args.base, fetch=args.fetch, cwd=cwd)
+    except TargetError as exc:
+        print(f"cannot resolve the target: {exc}", file=sys.stderr)
+    except (GitError, ValueError) as exc:
+        print(f"cannot read the diff: {exc}", file=sys.stderr)
+    return EXIT_USAGE
+
+
+def _load_resolved(args, resolved: Resolved):
+    target = resolved.target
+    dirs = [invocation_path(d) for d in args.reviews_dir] if args.reviews_dir \
+        else [default_reviews_dir()]
+    kind, path, review = find_review(target, dirs)
+    pr = resolved.pr.to_dict() if resolved.pr else None
+    if kind == "match":
+        review.target.repo_path = target.repo_path
+        box = path.parent / "viewer"
+        meta = {"pr": pr, "notice": None, "review": f"findings: {len(review.findings)}"}
+        return [(review, box)], {target.slug: meta}
+    notice = None
+    status = "none"
+    if kind == "stale":
+        rt = review.target
+        notice = (f"a review exists for {rt.head_sha[:8]}; this diff is at "
+                  f"{target.head_sha[:8]}. It was not loaded: {path}")
+        status = f"stale {rt.head_sha[:8]}"
+    box = output_root() / "review-viewer" / target.slug / "viewer"
+    return [(diff_findings(target), box)], {target.slug: {"pr": pr, "notice": notice,
+                                                          "review": status}}
+
+
+def _load_targets(args):
+    """([(findings, mailbox)], {slug: {"pr", "notice", "review"}}), or an exit code."""
+    loaded: list[tuple[FindingsFile, Path]] = []
+    if args.target is not None or args.range is not None or not args.findings:
+        if args.findings:
+            print("give findings.json files, or a target (--target, or --repo with --range), "
+                  "not both", file=sys.stderr)
             return EXIT_USAGE
-        box = output_root() / "review-viewer" / target.slug / "viewer"
-        loaded.append((diff_findings(target), box))
-        return loaded
-    if not args.findings:
-        print("give one or more findings.json files, or --repo <path> --range <base>..<head>",
+        resolved = _resolve_for_serve(args)
+        if isinstance(resolved, int):
+            return resolved
+        return _load_resolved(args, resolved)
+    if args.repo:
+        print("with findings files, point at the clone with --repo-root, not --repo",
               file=sys.stderr)
         return EXIT_USAGE
     for raw in args.findings:
@@ -115,7 +207,8 @@ def _load_targets(args) -> list[tuple[FindingsFile, Path]] | int:
         print("two findings files share one directory, so they would share one mailbox; "
               "move one of them", file=sys.stderr)
         return EXIT_USAGE
-    return loaded
+    return loaded, {ff.target.slug: {"review": f"findings: {len(ff.findings)}"}
+                    for ff, _ in loaded}
 
 
 def _monitor_command(boxes: list[Path], label: str) -> str:
@@ -134,14 +227,17 @@ def _pending_command(boxes: list[Path]) -> str:
 
 
 def _print_contract(open_html: Path, urls: list[tuple[str, str]], boxes: list[Path],
-                    label: str) -> None:
+                    label: str, reviews: list[str]) -> None:
     print(f"open: file://{open_html}")
     for url, why in urls:
         print(f"url: {url}  ({why}; reference only, needs the link above to authorise)")
     for box in boxes:
         print(f"mailbox: {box}")
     print(f"monitor: {_monitor_command(boxes, label)}")
-    print(f"pending: {_pending_command(boxes)}", flush=True)
+    print(f"pending: {_pending_command(boxes)}")
+    for box, review in zip(boxes, reviews):
+        print(f"walkthrough: {walkthrough.walkthrough_path(box)} ({review})")
+    sys.stdout.flush()
 
 
 def _wait_for_cleanup(boxes: list[str], timeout: float = 10.0) -> bool:
@@ -155,7 +251,8 @@ def _wait_for_cleanup(boxes: list[str], timeout: float = 10.0) -> bool:
     return False
 
 
-def _reuse_or_replace(args, loaded, boxes: list[Path], label: str) -> int | None:
+def _reuse_or_replace(args, loaded, boxes: list[Path], label: str,
+                      reviews: list[str]) -> int | None:
     """Deal with a viewer already serving one of these mailboxes.
 
     Returns an exit code when this call is finished (reused, or refused), and
@@ -202,23 +299,29 @@ def _reuse_or_replace(args, loaded, boxes: list[Path], label: str) -> int | None
                   "reused it", session_id=args.session_id, port=live["port"],
                   owner_session=owner[:8])
         print("viewer already running for this session; reusing it", flush=True)
-        _print_contract(box / "open.html", netinfo.display_urls(live["port"]), boxes, label)
+        _print_contract(box / "open.html", netinfo.display_urls(live["port"]), boxes, label,
+                        reviews)
         return 0
     return None
 
 
 def cmd_serve(args) -> int:
-    loaded = _load_targets(args)
-    if isinstance(loaded, int):
-        return loaded
+    result = _load_targets(args)
+    if isinstance(result, int):
+        return result
+    loaded, meta = result
+    for ff, _ in loaded:
+        extra = meta.setdefault(ff.target.slug, {})
+        extra["stats"] = stats.safe_change_stats(ff.target, extra.get("pr"))
     boxes = [b.resolve() for _, b in loaded]
     label = ", ".join(ff.target.label for ff, _ in loaded)
-    done = _reuse_or_replace(args, loaded, boxes, label)
+    reviews = [meta[ff.target.slug]["review"] for ff, _ in loaded]
+    done = _reuse_or_replace(args, loaded, boxes, label, reviews)
     if done is not None:
         return done
 
     viewer = server.build_viewer(loaded, agent=args.agent, session_id=args.session_id,
-                                 idle_minutes=args.idle)
+                                 idle_minutes=args.idle, meta=meta)
     host = netinfo.bind_host()
     last = args.port + registry.PORT_SPAN - 1
     if server.bind(viewer, host, args.port, registry.PORT_SPAN) is None:
@@ -232,7 +335,7 @@ def cmd_serve(args) -> int:
               f"viewer started for {', '.join(viewer.targets)} on port {viewer.port}",
               session_id=args.session_id, port=viewer.port, targets=list(viewer.targets),
               host=host, container=container)
-    _print_contract(boxes[0] / "open.html", urls, boxes, label)
+    _print_contract(boxes[0] / "open.html", urls, boxes, label, reviews)
     signal.signal(signal.SIGTERM, _raise_interrupt)
     server.run(viewer)
     return 0
@@ -368,6 +471,94 @@ def cmd_pending(args) -> int:
     return 0
 
 
+# --- walkthrough ----------------------------------------------------------------------
+
+
+def _served(args):
+    box = invocation_path(args.box).resolve()
+    try:
+        return box, walkthrough.load_served(box)
+    except FileNotFoundError:
+        print(f"no served target in {box} (it is the mailbox: directory `serve` printed; "
+              "start the viewer first)", file=sys.stderr)
+    except (OSError, ValueError) as exc:
+        print(f"cannot read {walkthrough.served_path(box)}: {exc}", file=sys.stderr)
+    return box, None
+
+
+def cmd_walkthrough_put(args) -> int:
+    box, served = _served(args)
+    if served is None:
+        return EXIT_USAGE
+    path = invocation_path(args.file)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        print(f"cannot read {path}: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    try:
+        wt, errors = walkthrough.put(box, text, served.findings)
+    except GitError as exc:
+        print(f"cannot check the walkthrough: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    if errors:
+        print(f"walkthrough rejected ({len(errors)} problem{'s' if len(errors) > 1 else ''}); "
+              "nothing was published:", file=sys.stderr)
+        for e in errors:
+            print(f"  - {e}", file=sys.stderr)
+        return EXIT_USAGE
+    slug = served.findings.target.slug
+    log_event(COMPONENT, "walkthrough",
+              f"walkthrough for {slug}: {len(wt.steps)} steps"
+              f"{' (complete)' if wt.complete else ' (in progress)'}",
+              session_id=args.session_id, target=slug, steps=len(wt.steps),
+              complete=wt.complete)
+    uncovered, unlinked = walkthrough.coverage(wt, served.findings)
+    print(f"published {walkthrough.walkthrough_path(box)}: {len(wt.steps)} steps, "
+          f"{'complete' if wt.complete else 'in progress'}; "
+          f"{len(uncovered)} changed files and {len(unlinked)} findings not covered yet")
+    return 0
+
+
+def cmd_walkthrough_status(args) -> int:
+    box, served = _served(args)
+    if served is None:
+        return EXIT_USAGE
+    try:
+        wt = walkthrough.load_walkthrough(box)
+    except (OSError, ValueError) as exc:
+        print(f"cannot read {walkthrough.walkthrough_path(box)}: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    ff = served.findings
+    t = ff.target
+    uncovered, unlinked = walkthrough.coverage(wt, ff)
+    state = "absent" if wt is None else (
+        f"{len(wt.steps)} steps, {'complete' if wt.complete else 'in progress'}")
+    print(f"walkthrough: {walkthrough.walkthrough_path(box)} ({state})")
+    print(f"target: {t.label}, {len(t.files_changed)} changed files, "
+          f"{len(ff.findings)} findings")
+    print(f"base_sha: {t.base_sha}")
+    print(f"head_sha: {t.head_sha}")
+    print(f"changed files not covered ({len(uncovered)}):")
+    for path in uncovered:
+        print(f"  {path}")
+    by_id = {f.id: f for f in ff.findings}
+    print(f"findings not linked ({len(unlinked)}):")
+    for fid in unlinked:
+        f = by_id[fid]
+        print(f"  {fid} {f.severity} {f.status} {f.file}:{f.line_start} {f.claim}")
+    have = {a.topic for a in wt.assessments} if wt else set()
+    missing = [t for t in walkthrough.MUST_ASSESS if t not in have]
+    print(f"assessments missing ({len(missing)}): {', '.join(missing)}")
+    badges = (served.stats or {}).get("badges") or []
+    print(f"measured ({len(badges)}):" if served.stats else "measured: not available")
+    for b in badges:
+        print(f"  [{b['level']}] {b['label']}: {b['detail']}")
+    for c in (served.stats or {}).get("commits") or []:
+        print(f"  commit {c['sha'][:8]} {c['subject']}" + ("" if c["body"] else " (no body)"))
+    return 0
+
+
 # --- validate / export-schema -------------------------------------------------------
 
 
@@ -386,10 +577,13 @@ def cmd_validate(args) -> int:
 
 
 def cmd_export_schema(args) -> int:
-    out = invocation_path(args.out) if args.out else SCHEMA_PATH
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(schema_text(), encoding="utf-8")
-    print(f"wrote {out}")
+    for given, default, text in ((args.out, SCHEMA_PATH, schema_text()),
+                                 (args.walkthrough_out, WALKTHROUGH_SCHEMA_PATH,
+                                  walkthrough_schema_text())):
+        out = invocation_path(given) if given else default
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(text, encoding="utf-8")
+        print(f"wrote {out}")
     return 0
 
 
@@ -411,8 +605,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("serve", parents=[common], help="start or reuse the viewer")
     s.add_argument("findings", nargs="*", help="findings.json files (v1)")
-    s.add_argument("--repo", help="plain-diff mode: the repository")
-    s.add_argument("--range", help="plain-diff mode: <base>..<head>")
+    s.add_argument("--target",
+                   help="a PR (number, URL, owner/repo#N), a branch, a worktree path, "
+                        "<base>..<head> or <a>...<b>; with no target and no findings, the "
+                        "unpushed commits of --repo or the current directory")
+    s.add_argument("--repo", help="the local clone to read (default: the current directory)")
+    s.add_argument("--range", help="same as --target <base>..<head>; needs --repo")
+    s.add_argument("--base", help="branch targets: the branch to diff against "
+                                  "(default: origin/HEAD's branch, else main)")
+    s.add_argument("--fetch", action="store_true",
+                   help="run `git fetch origin` in the clone before resolving")
+    s.add_argument("--reviews-dir", action="append", default=[],
+                   help="where to look for a review of the same commits (repeatable; "
+                        "default: the review skill's output directory)")
     s.add_argument("--repo-root", help="read git from here instead of target.repo_path")
     s.add_argument("--port", type=int, default=registry.PORT_START,
                    help=f"first port to try (default {registry.PORT_START}; 20 are tried)")
@@ -442,12 +647,29 @@ def build_parser() -> argparse.ArgumentParser:
     st.add_argument("--all", action="store_true", help="stop every live viewer")
     st.set_defaults(func=cmd_stop)
 
+    w = sub.add_parser("walkthrough", parents=[common],
+                       help="publish or inspect the walkthrough the page shows")
+    wsub = w.add_subparsers(dest="wcmd", required=True, metavar="action")
+    wp = wsub.add_parser("put", parents=[common],
+                         help="check a walkthrough.json and publish it to the page")
+    wp.add_argument("--box", required=True, help="the mailbox directory the server printed")
+    wp.add_argument("--file", required=True, help="the walkthrough.json the session wrote")
+    wp.set_defaults(func=cmd_walkthrough_put)
+    ws = wsub.add_parser("status", parents=[common],
+                         help="list changed files and findings the walkthrough does not cover")
+    ws.add_argument("--box", required=True, help="the mailbox directory the server printed")
+    ws.set_defaults(func=cmd_walkthrough_status)
+
     v = sub.add_parser("validate", parents=[common], help="validate findings.json files")
     v.add_argument("files", nargs="+")
     v.set_defaults(func=cmd_validate)
 
-    e = sub.add_parser("export-schema", parents=[common], help="write the v1 JSON Schema")
-    e.add_argument("--out", help=f"output path (default: {SCHEMA_PATH.name} in schema/)")
+    e = sub.add_parser("export-schema", parents=[common],
+                       help="write the findings and walkthrough v1 JSON Schemas")
+    e.add_argument("--out", help=f"findings schema path (default: {SCHEMA_PATH.name} in schema/)")
+    e.add_argument("--walkthrough-out",
+                   help=f"walkthrough schema path (default: {WALKTHROUGH_SCHEMA_PATH.name} in "
+                        "schema/)")
     e.set_defaults(func=cmd_export_schema)
     return ap
 

@@ -1,0 +1,242 @@
+{
+  "$defs": {
+    "Assessment": {
+      "additionalProperties": false,
+      "description": "The session's judgment on one quality question, shown as a badge beside\nthe measured ones. `commits` (do the messages and the PR description\nexplain the change?) and `tests` (is the new code tested?) are required\nonce the walkthrough is complete.",
+      "properties": {
+        "detail_md": {
+          "title": "Detail Md",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 60,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        },
+        "topic": {
+          "enum": [
+            "commits",
+            "tests",
+            "size",
+            "design",
+            "risk",
+            "other"
+          ],
+          "title": "Topic",
+          "type": "string"
+        },
+        "verdict": {
+          "enum": [
+            "good",
+            "note",
+            "concern"
+          ],
+          "title": "Verdict",
+          "type": "string"
+        }
+      },
+      "required": [
+        "topic",
+        "verdict",
+        "title",
+        "detail_md"
+      ],
+      "title": "Assessment",
+      "type": "object"
+    },
+    "Diagram": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "mermaid",
+          "title": "Kind",
+          "type": "string"
+        },
+        "source": {
+          "maxLength": 20000,
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "source"
+      ],
+      "title": "Diagram",
+      "type": "object"
+    },
+    "Skipped": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "reason"
+      ],
+      "title": "Skipped",
+      "type": "object"
+    },
+    "Step": {
+      "additionalProperties": false,
+      "properties": {
+        "anchors": {
+          "items": {
+            "$ref": "#/$defs/WalkthroughAnchor"
+          },
+          "minItems": 1,
+          "title": "Anchors",
+          "type": "array"
+        },
+        "body_md": {
+          "title": "Body Md",
+          "type": "string"
+        },
+        "diagram": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Diagram"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "finding_ids": {
+          "items": {
+            "pattern": "^[0-9a-f]{10}$",
+            "type": "string"
+          },
+          "title": "Finding Ids",
+          "type": "array"
+        },
+        "id": {
+          "pattern": "^[a-z0-9-]{1,40}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "body_md",
+        "anchors"
+      ],
+      "title": "Step",
+      "type": "object"
+    },
+    "WalkthroughAnchor": {
+      "additionalProperties": false,
+      "properties": {
+        "line_end": {
+          "minimum": 1,
+          "title": "Line End",
+          "type": "integer"
+        },
+        "line_start": {
+          "minimum": 1,
+          "title": "Line Start",
+          "type": "integer"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "side": {
+          "enum": [
+            "head",
+            "base"
+          ],
+          "title": "Side",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "side",
+        "line_start",
+        "line_end"
+      ],
+      "title": "WalkthroughAnchor",
+      "type": "object"
+    }
+  },
+  "$id": "walkthrough.v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "assessments": {
+      "items": {
+        "$ref": "#/$defs/Assessment"
+      },
+      "title": "Assessments",
+      "type": "array"
+    },
+    "base_sha": {
+      "pattern": "^[0-9a-f]{40}$",
+      "title": "Base Sha",
+      "type": "string"
+    },
+    "complete": {
+      "title": "Complete",
+      "type": "boolean"
+    },
+    "generated_at": {
+      "format": "date-time",
+      "title": "Generated At",
+      "type": "string"
+    },
+    "head_sha": {
+      "pattern": "^[0-9a-f]{40}$",
+      "title": "Head Sha",
+      "type": "string"
+    },
+    "overview_md": {
+      "title": "Overview Md",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "skipped": {
+      "items": {
+        "$ref": "#/$defs/Skipped"
+      },
+      "title": "Skipped",
+      "type": "array"
+    },
+    "steps": {
+      "items": {
+        "$ref": "#/$defs/Step"
+      },
+      "title": "Steps",
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "generated_at",
+    "base_sha",
+    "head_sha",
+    "overview_md",
+    "steps",
+    "complete"
+  ],
+  "title": "Walkthrough",
+  "type": "object"
+}

@@ -9,8 +9,10 @@
   --add-mark: #1a7f37;
   --del-bg: #ffebe9;
   --del-mark: #cf222e;
-  --cited-bg: #fff8c5;
-  --focus-bg: #ffe58f;
+  --add-num: #ccffd8;
+  --del-num: #ffd7d5;
+  --hl-bg: rgba(9, 105, 218, 0.08);
+  --hl-bar: #0969da;
   --gap-bg: #ddf4ff;
   --high: #cf222e;
   --medium: #bc4c00;
@@ -32,8 +34,12 @@
     --add-mark: #3fb950;
     --del-bg: #2d1316;
     --del-mark: #f85149;
-    --cited-bg: #2e2a12;
-    --focus-bg: #4b3d0b;
+    --add-bg: rgba(46, 160, 67, 0.15);
+    --del-bg: rgba(248, 81, 73, 0.10);
+    --add-num: rgba(63, 185, 80, 0.30);
+    --del-num: rgba(248, 81, 73, 0.30);
+    --hl-bg: rgba(68, 147, 248, 0.15);
+    --hl-bar: #4493f8;
     --gap-bg: #121d2f;
     --high: #f85149;
     --medium: #db6d28;
@@ -98,20 +104,25 @@ kbd {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: 280px minmax(0, 1fr) 380px;
+  grid-template-columns: var(--side-w, 280px) 6px minmax(0, 1fr) 380px;
+  /* One row the height of the window, so each pane scrolls on its own. */
+  grid-template-rows: minmax(0, 1fr);
 }
 .side, .detail {
   overflow: auto;
   padding: 12px;
   background: var(--panel);
 }
-.side { border-right: 1px solid var(--border); }
+.resizer { cursor: col-resize; background: transparent; border-left: 1px solid var(--border); touch-action: none; }
+.resizer:hover, .resizer:focus-visible, body.resizing .resizer { background: var(--accent); outline: none; }
+body.resizing { cursor: col-resize; user-select: none; }
 .detail { border-left: 1px solid var(--border); }
-.centre { position: relative; display: flex; flex-direction: column; min-width: 0; }
+.centre { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 
 @media (max-width: 1000px) {
-  .layout { grid-template-columns: 1fr; grid-auto-rows: auto; overflow: auto; }
+  .layout { grid-template-columns: 1fr; grid-template-rows: none; grid-auto-rows: auto; overflow: auto; }
   .side, .detail { border: 0; border-bottom: 1px solid var(--border); }
+  .resizer { display: none; }
   .code { max-height: 70vh; }
 }
 
@@ -160,10 +171,23 @@ kbd {
   border: 0;
   background: none;
   padding: 3px 4px;
+  padding-left: 14px;
   font: 12px var(--mono);
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.files li button.selected { color: var(--accent); font-weight: 600; }
+.files li.dir-h {
+  margin-top: 6px;
+  padding: 2px 4px;
+  color: var(--muted);
+  font: 11px var(--mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.files li.dir-h:first-child { margin-top: 0; }
+.files li button.selected { color: var(--accent); font-weight: 600; background: var(--hl-bg); box-shadow: inset 3px 0 var(--accent); }
 .empty { color: var(--muted); font-style: italic; }
 
 .file-head {
@@ -189,17 +213,37 @@ kbd {
 }
 .code td.mark { width: 1%; padding: 0 2px; user-select: none; }
 .code td.src { width: 100%; }
-.code tr.add td.src { background: var(--add-bg); }
+.code tr.add td { background: var(--add-bg); }
+.code tr.add td.ln { background: var(--add-num); }
+.code tr.del td { background: var(--del-bg); }
+.code tr.del td.ln { background: var(--del-num); }
 .code tr.add td.mark::before { content: "+"; color: var(--add-mark); }
-.code tr.del td.src { background: var(--del-bg); text-decoration: line-through; text-decoration-color: var(--del-mark); }
 .code tr.del td.mark::before { content: "−"; color: var(--del-mark); }
 .code tr.gap td { background: var(--gap-bg); color: var(--muted); font-style: italic; }
-.code tr.cited td.src { box-shadow: inset 3px 0 0 var(--medium); }
-.code tr.cited:not(.add):not(.del) td.src { background: var(--cited-bg); }
-.code tr.focus td.src { background: var(--focus-bg); }
+.code tr.fold td { background: var(--gap-bg); color: var(--muted); padding: 2px 8px; font-family: var(--sans, sans-serif); font-size: 12px; }
+.fold-label { margin-right: 10px; }
+.fold-btn { font-size: 11px; padding: 0 6px; margin-right: 4px; }
+.file-nav { padding: 6px 12px; font-size: 12px; font-family: var(--sans, sans-serif); }
+.file-nav.next { border-top: 1px solid var(--border); margin-top: 8px; }
+.file-nav.prev:empty { display: none; }
+.file-nav-btn { border: 0; background: none; color: var(--accent); padding: 2px 0; }
+.overscroll-bar { height: 3px; width: 0; background: var(--accent); transition: width 0.1s linear; }
+.code tr.cited td.src,
+.code tr.focus td.src { box-shadow: inset 3px 0 0 var(--hl-bar); }
+.code tr.focus.ctx td.src { background: var(--hl-bg); }
+/* Above each block of changed lines: a light bulb, or its explanation. */
+.code tr.block-head td { white-space: normal; font: 13px/1.45 var(--sans); padding: 2px 8px; background: var(--bg); }
+.bulb { border: 0; background: none; padding: 1px 4px; font-size: 12px; color: var(--muted); opacity: 0.55; }
+.bulb:hover, .bulb:focus-visible { opacity: 1; color: var(--accent); }
+.strip { display: flex; gap: 8px; align-items: flex-start; margin: 4px 0; padding: 6px 10px;
+  border: 1px solid var(--border); border-left: 3px solid var(--hl-bar); border-radius: 6px; background: var(--panel); }
+.strip-body { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.strip-body p { margin: 0 0 4px; }
+.strip-body pre { overflow-x: auto; white-space: pre; }
+.strip-more { white-space: nowrap; font-size: 12px; }
 .code tr.picked td { outline: 1px dashed var(--accent); outline-offset: -1px; }
 .code tr.flash td.src { animation: flash 1.2s ease-out; }
-@keyframes flash { from { background: var(--focus-bg); } }
+@keyframes flash { from { box-shadow: inset 3px 0 0 var(--hl-bar), inset 0 0 0 999px var(--hl-bg); } }
 .dot {
   display: inline-block;
   width: 8px;
@@ -242,14 +286,6 @@ pre.sketch {
   overflow: auto;
 }
 .assumption { color: var(--medium); font-weight: 600; }
-.chip {
-  display: inline-block;
-  font: 12px var(--mono);
-  border: 1px solid var(--accent);
-  border-radius: 10px;
-  padding: 0 8px;
-  margin-bottom: 6px;
-}
 .thread { list-style: none; padding: 0; margin: 0 0 8px; }
 .thread li { margin-bottom: 10px; }
 .q {
@@ -284,3 +320,83 @@ pre.sketch {
 .row { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
 .decide input { margin-top: 4px; }
 .keys { margin-top: 20px; font-size: 12px; }
+
+/* --- question box: a footer, always visible ------------------------------- */
+.composer { position: relative; border-top: 1px solid var(--border); background: var(--panel); padding: 6px 12px 8px; }
+/* The chat opens upward over the page while the footer has focus. */
+.chat { position: absolute; left: 0; right: 0; bottom: 100%; z-index: 20; max-height: 65vh; overflow: auto;
+  background: var(--panel); border-top: 1px solid var(--border); box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.3);
+  padding: 8px 12px 4px; outline: none; }
+.chat-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px;
+  position: sticky; top: -8px; background: var(--panel); padding: 4px 0; }
+.chat .thread { max-width: 110ch; margin: 0 auto 4px; }
+.chat .a { overflow-wrap: anywhere; }
+.chat-status { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); }
+.chat-status:empty { display: none; }
+.unread-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); display: inline-block; }
+.composer-head { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; margin-bottom: 4px; font-size: 12px; }
+.ask-about { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 60ch; }
+.composer-row { display: flex; gap: 8px; align-items: flex-end; }
+.composer-input { position: relative; flex: 1; min-width: 0; }
+.composer textarea { width: 100%; max-height: 30vh; resize: vertical; display: block; }
+.ac { position: absolute; bottom: 100%; left: 0; z-index: 30; margin: 0 0 4px; padding: 4px 0; list-style: none;
+  min-width: 280px; max-width: 100%; max-height: 260px; overflow: auto;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25); }
+.ac li { display: flex; gap: 8px; align-items: baseline; padding: 3px 10px; cursor: pointer; white-space: nowrap; }
+.ac li.active { background: var(--hl-bg); box-shadow: inset 3px 0 var(--hl-bar); }
+.ac-name { font: 12px var(--mono); font-weight: 600; }
+.ac-dir { font: 11px var(--mono); color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.code tr.add td.src, .code tr.del td.src { cursor: pointer; }
+
+/* --- walkthrough ------------------------------------------------------------ */
+.pr-info { margin-left: 12px; }
+.pr-info .pr-title { font-weight: 600; }
+.pr-info a { color: var(--accent); margin-left: 6px; }
+.banner.notice { background: var(--gap-bg); color: var(--text); }
+.tabs { display: flex; gap: 4px; margin-bottom: 10px; border-bottom: 1px solid var(--border); }
+/* The tabs stay at the top of the right panel while its content scrolls.
+   The panel has no top padding, so `top: 0` is its visible top edge in
+   every browser; the bar spans the panel's side padding and is opaque. */
+.detail { padding-top: 0; }
+.detail > .tabs { position: sticky; top: 0; z-index: 2; background: var(--panel); margin: 0 -12px 10px; padding: 8px 12px 0; }
+.tabs button { border: none; border-bottom: 2px solid transparent; border-radius: 0; background: none; padding: 6px 10px; }
+.tabs button.active { border-bottom-color: var(--accent); font-weight: 600; }
+.walk-status { font-style: italic; }
+.walk-steps { list-style: none; padding: 0; margin: 10px 0; }
+.walk-steps li { margin: 2px 0; }
+.step-item { display: flex; gap: 8px; width: 100%; text-align: left; background: none; border-color: transparent; }
+.step-item.selected { border-color: var(--accent); background: var(--panel); }
+.step-n { color: var(--muted); min-width: 1.5em; text-align: right; }
+.skipped { margin: 4px 0 0; padding-left: 18px; color: var(--muted); }
+.step-nav { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 8px 0; }
+.step-anchors { display: flex; flex-wrap: wrap; gap: 4px; }
+.step-anchors .walk-anchor { max-width: 100%; text-align: left; overflow-wrap: anywhere; }
+.diagram-box { margin: 10px 0; overflow-x: auto; }
+/* Full size: a wide diagram scaled to the panel is unreadable, so the box scrolls. */
+img.diagram { display: block; max-width: none; background: var(--bg); }
+.finding-card { margin-top: 4px; }
+.badges { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+.badge-row { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.badge-row .label { width: 100%; }
+.qbadge { font-size: 12px; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg); }
+.qbadge.good { border-color: var(--add-mark); color: var(--add-mark); }
+.qbadge.note { border-color: var(--medium); color: var(--medium); }
+.qbadge.concern { border-color: var(--del-mark); color: var(--del-mark); }
+.qbadge.open { box-shadow: inset 0 -2px currentColor; font-weight: 600; }
+.badge-detail { border-left: 3px solid var(--border); padding: 2px 10px; margin: 0 0 10px; font-size: 13px; }
+.pr-desc { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 8px; }
+.pr-desc > summary { cursor: pointer; font-weight: 600; }
+.files li button.in-step:not(.selected) { box-shadow: inset 3px 0 var(--border); color: var(--text); }
+.small { font-size: 12px; }
+.md pre { overflow-x: auto; }
+/* Markdown in the side panels (the overview, reviews, the PR description,
+   answers) must fit the column: long words wrap, and a table or image wider
+   than the column scrolls inside its own box instead of the whole panel. */
+.md, .a { overflow-wrap: anywhere; min-width: 0; }
+.md table, .a table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; }
+.md th, .md td, .a th, .a td { border: 1px solid var(--border); padding: 2px 6px; vertical-align: top; }
+.md img, .a img { max-width: 100%; height: auto; }
+/* The right column only ever scrolls up and down; wide content scrolls in place. */
+.detail { overflow-x: hidden; }
+/* Scrolled to on a click, below the pinned tab bar rather than under it. */
+.walk-step { scroll-margin-top: 48px; }

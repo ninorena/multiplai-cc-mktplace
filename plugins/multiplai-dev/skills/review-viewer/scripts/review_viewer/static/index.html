@@ -24,17 +24,22 @@
 <script defer src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.4.16/purify.min.js"
         integrity="sha512-flQmhkXNRQ3iUfvtdCobtpMjCb6kE+zLnTiAulAQJ3WykVfy84JvCMOo6vhwWXHTXjR25h9Zj+LyGFRWKjRoag=="
         crossorigin="anonymous"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/11.15.0/mermaid.min.js"
+        integrity="sha512-HH52omhHpZF6RfVnGiQwYgYm4H/ya2xsZYLl5xJ4+tLfX+rN4+8zF7V/H/KLeicPrKZYi1g6iBmVkk2AhXTGlg=="
+        crossorigin="anonymous"></script>
 <script defer src="/static/logic.js"></script>
 <script defer src="/static/app.js"></script>
 </head>
 <body>
 <header class="top">
   <h1 id="title">Review viewer</h1>
+  <span id="pr-info" class="pr-info" hidden></span>
   <span id="who" class="muted"></span>
 </header>
 <div id="banner" class="banner" hidden></div>
+<div id="notice" class="banner notice" hidden></div>
 <main class="layout">
-  <nav class="side" aria-label="Findings and files">
+  <nav id="side" class="side" aria-label="Findings and files">
     <select id="target-select" hidden aria-label="Review target"></select>
     <label class="toggle"><input type="checkbox" id="show-hidden"> <span id="hidden-label">Show refuted and rejected</span></label>
     <div id="findings"></div>
@@ -42,6 +47,9 @@
     <input id="file-search" type="search" placeholder="Filter files ( / )" aria-label="Filter files">
     <ul id="files" class="files"></ul>
   </nav>
+  <div id="side-resize" class="resizer" role="separator" aria-orientation="vertical"
+       aria-controls="side" aria-label="Resize the sidebar (arrow keys; double-click resets)"
+       aria-valuemin="160" tabindex="0" title="Drag to resize; double-click to reset"></div>
   <section class="centre" aria-label="File">
     <div class="file-head">
       <span id="file-path" class="mono"></span>
@@ -50,15 +58,27 @@
     <div id="code" class="code" tabindex="0"></div>
     <button id="ask-lines" class="float-btn" hidden>Ask about these lines</button>
   </section>
-  <aside class="detail" aria-label="Selected finding">
-    <div id="finding"></div>
-    <section class="thread-box">
-      <h3 id="thread-title">Questions</h3>
-      <div id="anchor-chip" class="chip" hidden></div>
-      <ol id="thread" class="thread"></ol>
-      <textarea id="question" rows="3" placeholder="Ask a question (Ctrl+Enter to send)"></textarea>
-      <div class="row"><button id="send">Send</button></div>
-    </section>
+  <aside class="detail" aria-label="Summary, reviews and findings">
+    <div class="tabs" role="tablist">
+      <button id="tab-summary" role="tab" aria-controls="summary">Summary</button>
+      <button id="tab-walk" role="tab" aria-controls="walkthrough">Reviews <span id="walk-count" class="muted"></span></button>
+      <button id="tab-finding" role="tab" aria-controls="finding">Findings <span id="finding-count" class="muted"></span></button>
+    </div>
+    <div id="summary" role="tabpanel">
+      <div id="badges" class="badges"></div>
+      <div id="badge-detail" class="badge-detail" hidden></div>
+      <p id="walk-status" class="muted walk-status"></p>
+      <div id="walk-overview" class="md"></div>
+      <details id="pr-desc" class="pr-desc" open hidden>
+        <summary>PR description</summary>
+        <div id="pr-body" class="md"></div>
+      </details>
+    </div>
+    <div id="walkthrough" role="tabpanel" hidden>
+      <ol id="walk-steps" class="walk-steps"></ol>
+      <div id="walk-step" class="walk-step"></div>
+    </div>
+    <div id="finding" role="tabpanel" hidden></div>
     <section id="decide" class="decide" hidden>
       <h3>Decision <span id="decision-now" class="muted"></span></h3>
       <input id="decision-note" type="text" placeholder="Note (optional)" aria-label="Decision note">
@@ -68,8 +88,30 @@
         <button data-decision="defer">Defer</button>
       </div>
     </section>
-    <p class="muted keys">Keys: <kbd>j</kbd>/<kbd>k</kbd> next/previous finding · <kbd>/</kbd> filter files · <kbd>Esc</kbd> clear selection</p>
+    <p class="muted keys">Keys: <kbd>j</kbd>/<kbd>k</kbd> next/previous finding · <kbd>]</kbd>/<kbd>[</kbd> next/previous step · <kbd>/</kbd> filter files · <kbd>Esc</kbd> clear selection</p>
   </aside>
 </main>
+<footer id="composer" class="composer" aria-label="Chat with the session">
+  <section id="chat" class="chat" tabindex="-1" aria-label="Conversation" hidden>
+    <div class="chat-head">
+      <strong id="chat-title">Chat</strong>
+      <button id="chat-close" class="cite-link" title="Collapse (Esc)">Collapse</button>
+    </div>
+    <ol id="thread" class="thread"></ol>
+  </section>
+  <div class="composer-head">
+    <span id="chat-status" class="chat-status" role="status" aria-live="polite"></span>
+    <span id="ask-about" class="ask-about"></span>
+    <span class="muted small">Type <kbd>@</kbd> for a changed file, then <code>:12</code> or <code>:12-20</code> for lines · click a changed line to add its block · <kbd>Ctrl</kbd>+<kbd>Enter</kbd> sends</span>
+  </div>
+  <div class="composer-row">
+    <div class="composer-input">
+      <textarea id="question" rows="1" placeholder="Message the session about the change (click to open the chat)" aria-label="Message"
+                aria-autocomplete="list" aria-controls="ac"></textarea>
+      <ul id="ac" class="ac" role="listbox" aria-label="Changed files" hidden></ul>
+    </div>
+    <button id="send">Send</button>
+  </div>
+</footer>
 </body>
 </html>

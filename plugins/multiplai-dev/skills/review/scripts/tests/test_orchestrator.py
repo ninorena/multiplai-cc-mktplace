@@ -194,3 +194,20 @@ def test_global_flags_are_not_overwritten_when_absent_after_the_subcommand():
 
     args = build_parser().parse_args(["--out", "/x", "--session-id", "s", "rollup"])
     assert (args.out, args.session_id) == ("/x", "s")
+
+
+def test_default_out_is_the_workspace_inbox_else_home_never_cwd(tmp_path, monkeypatch):
+    from review_pipeline.__main__ import default_out
+
+    cfg, home, ran_from = tmp_path / "cfg", tmp_path / "home", tmp_path / "repo"
+    for d in (cfg, home, ran_from):
+        d.mkdir()
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(cfg))
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(ran_from)
+    assert default_out() == home / ".multiplai" / "reviews"
+
+    ws = tmp_path / "ws"
+    (ws / "INBOX").mkdir(parents=True)
+    (cfg / ".workspace").write_text(str(ws))
+    assert default_out() == ws / "INBOX" / "reviews"

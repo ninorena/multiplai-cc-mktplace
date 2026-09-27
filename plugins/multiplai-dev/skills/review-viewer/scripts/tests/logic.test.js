@@ -120,6 +120,306 @@ test("a shrunken outbox resets the read position", () => {
   assert.deepEqual([next.rows.length, next.since, next.reset], [0, 0, true]);
 });
 
+// --- walkthrough -------------------------------------------------------------
+
+const WALK = {
+  complete: false,
+  steps: [
+    { id: "purpose", anchors: [{ path: "a.py", side: "head", line_start: 1, line_end: 2 }], finding_ids: [] },
+    { id: "core", anchors: [{ path: "b.py", side: "head", line_start: 5, line_end: 9 }], finding_ids: ["f1"] },
+    { id: "tests", anchors: [{ path: "old.py", side: "base", line_start: 3, line_end: 4 }], finding_ids: ["f1", "f2"] },
+  ],
+  skipped: [{ path: "uv.lock", reason: "generated" }],
+};
+
+test("steps keep the walkthrough's order", () => {
+  assert.deepEqual(L.stepOrder(WALK), ["purpose", "core", "tests"]);
+  assert.deepEqual(L.stepOrder(null), []);
+});
+
+test("[ and ] move one step and stop at the ends", () => {
+  assert.equal(L.moveStep(WALK, "purpose", 1), "core");
+  assert.equal(L.moveStep(WALK, "tests", 1), "tests");
+  assert.equal(L.moveStep(WALK, "purpose", -1), "purpose");
+  assert.equal(L.moveStep(WALK, null, 1), "purpose");
+  assert.equal(L.moveStep(WALK, null, -1), "tests");
+  assert.equal(L.moveStep({ steps: [] }, null, 1), null);
+  assert.deepEqual(L.stepPosition(WALK, "core"), { index: 2, total: 3 });
+});
+
+test("coverage counts anchored or skipped files and linked findings", () => {
+  const cov = L.walkCoverage(WALK, ["a.py", "b.py", "c.py", "uv.lock"], [
+    { id: "f1", status: "confirmed" }, { id: "f3", status: "unverifiable" },
+    { id: "f2", status: "refuted" },
+  ]);
+  assert.deepEqual(cov, { files: 3, filesTotal: 4, findings: 1, findingsTotal: 2 });
+  assert.deepEqual(L.walkCoverage(null, ["a"], []), { files: 0, filesTotal: 1, findings: 0, findingsTotal: 0 });
+});
+
+test("walkthrough status text", () => {
+  assert.equal(L.walkStatus(null), "Waiting for the walkthrough");
+  assert.equal(L.walkStatus(WALK), "Walkthrough in progress");
+  assert.equal(L.walkStatus({ complete: true, steps: [] }), "");
+});
+
+test("anchors map to rows by new or old line number", () => {
+  const rows = [
+    { k: "ctx", o: null, n: 1 }, { k: "del", o: 3, n: null }, { k: "del", o: 4, n: null },
+    { k: "add", o: null, n: 2 }, { k: "gap", o: null, n: null }, { k: "ctx", o: null, n: 3 },
+  ];
+  assert.deepEqual(L.anchorRows(rows, { side: "head", line_start: 2, line_end: 3 }), [3, 5]);
+  assert.deepEqual(L.anchorRows(rows, { side: "base", line_start: 3, line_end: 4 }), [1, 2]);
+  assert.equal(L.walkAnchorLabel({ path: "x", side: "base", line_start: 3, line_end: 4 }), "x:3–4 (base)");
+});
+
+test("a finding's steps, and the diagram image source", () => {
+  assert.deepEqual(L.stepsForFinding(WALK, "f1").map((s) => s.id), ["core", "tests"]);
+  assert.deepEqual(L.stepsForFinding(WALK, "zz"), []);
+  const url = L.svgDataUrl('<svg xmlns="http://www.w3.org/2000/svg"><text>a & "b"</text></svg>');
+  assert.ok(url.startsWith("data:image/svg+xml;charset=utf-8,%3Csvg"));
+  assert.ok(!/[<>"&# ]/.test(url.slice(url.indexOf(",") + 1)));
+});
+
+test("only github.com links become PR links", () => {
+  assert.equal(L.safePrUrl("https://github.com/o/r/pull/7"), "https://github.com/o/r/pull/7");
+  assert.equal(L.safePrUrl("javascript:alert(1)"), null);
+  assert.equal(L.safePrUrl("https://evil.example/o/r/pull/7"), null);
+  assert.equal(L.safePrUrl(undefined), null);
+});
+
+test("files group by directory in first-seen order; root files have dir ''", () => {
+  const g = L.groupFilesByDir(["a/b.txt", "a/c/d.txt", "a/e.txt", "top.md"]);
+  assert.deepEqual(g.map((x) => x.dir), ["a", "a/c", ""]);
+  assert.deepEqual(g[0].files, [{ path: "a/b.txt", name: "b.txt" }, { path: "a/e.txt", name: "e.txt" }]);
+  assert.deepEqual(g[2].files, [{ path: "top.md", name: "top.md" }]);
+  assert.deepEqual(L.groupFilesByDir([]), []);
+});
+
+test("a long directory keeps its last two folders after an ellipsis", () => {
+  assert.equal(L.shortDir("plugins/multiplai-dev/skills/review-viewer/scripts"), "…/review-viewer/scripts/");
+  assert.equal(L.shortDir("plugins/multiplai-dev"), "plugins/multiplai-dev/");
+  assert.equal(L.shortDir(".claude-plugin"), ".claude-plugin/");
+  assert.equal(L.shortDir(""), "/");
+  assert.equal(L.shortDir("a/b/c/d", 3), "…/b/c/d/");
+});
+
+test("the sidebar width is clamped, and junk is refused", () => {
+  assert.equal(L.clampWidth(100, 160, 700), 160);
+  assert.equal(L.clampWidth(900, 160, 700), 700);
+  assert.equal(L.clampWidth("321.6", 160, 700), 322);
+  assert.equal(L.clampWidth("wide", 160, 700), null);
+  assert.equal(L.clampWidth(null, 160, 700), 160);
+});
+
+const R = (ks) => ks.split("").map((k, i) => ({ k: { c: "ctx", a: "add", d: "del", g: "gap" }[k], n: i + 1 }));
+
+test("unchanged runs fold, keeping context around changes and kept rows", () => {
+  //            0123456789012345
+  const rows = R("cccccccccaccccccccccc");
+  const items = L.foldRows(rows, [], [], 2, 3);
+  assert.deepEqual(items[0], { fold: [0, 6] });
+  assert.deepEqual(items.slice(1, 6).map((x) => x.row), [7, 8, 9, 10, 11]);
+  assert.deepEqual(items[6], { fold: [12, 20] });
+  assert.equal(items.length, 7);
+});
+
+test("a short hidden run is shown, not folded; kept and opened rows show", () => {
+  const rows = R("ccccacccc");
+  assert.ok(L.foldRows(rows, [], [], 2, 3).every((x) => x.row != null));
+  const kept = L.foldRows(R("cccccccccccccccc"), [8], [], 1, 3);
+  assert.deepEqual(kept.filter((x) => x.row != null).map((x) => x.row), [7, 8, 9]);
+  const opened = L.foldRows(R("cccccccccccc"), [], [0, 1], 3, 3);
+  assert.deepEqual(opened, [{ row: 0 }, { row: 1 }, { fold: [2, 11] }]);
+});
+
+test("gap rows always show; an all-added file has no folds", () => {
+  assert.ok(L.foldRows(R("aaaaaaaa"), [], [], 3, 4).every((x) => x.row != null));
+  assert.deepEqual(L.foldRows(R("cccccgccccc"), [], [], 3, 4), [{ fold: [0, 4] }, { row: 5 }, { fold: [6, 10] }]);
+});
+
+test("expanding a fold opens all of it, or a step from its top or bottom", () => {
+  assert.deepEqual(L.expandFold([10, 50], "down", 3), [10, 11, 12]);
+  assert.deepEqual(L.expandFold([10, 50], "up", 3), [48, 49, 50]);
+  assert.equal(L.expandFold([10, 50], "all", 3).length, 41);
+  assert.deepEqual(L.expandFold([10, 11], "down", 20), [10, 11]);
+});
+
+test("files move in sidebar order, filtered, stopping at both ends", () => {
+  const files = ["a/b.txt", "a/c/d.txt", "a/e.txt", "top.md"];
+  assert.deepEqual(L.fileOrder(files, ""), ["a/b.txt", "a/e.txt", "a/c/d.txt", "top.md"]);
+  assert.deepEqual(L.fileOrder(files, "TXT"), ["a/b.txt", "a/e.txt", "a/c/d.txt"]);
+  const order = L.fileOrder(files, "");
+  assert.equal(L.neighbourFile(order, "a/e.txt", 1), "a/c/d.txt");
+  assert.equal(L.neighbourFile(order, "a/b.txt", -1), null);
+  assert.equal(L.neighbourFile(order, "top.md", 1), null);
+  assert.equal(L.neighbourFile(order, "gone.md", 1), null);
+});
+
+test("overscroll moves only on a fresh push past the edge", () => {
+  const opts = { pauseMs: 200, need: 300 };
+  // A fling reaches the bottom: its momentum events (16 ms apart) never count.
+  let r = L.overscroll(null, 0, 100, 0, opts);
+  for (let t = 16; t < 600; t += 16) {
+    r = L.overscroll(r.acc, 1, 50, t, opts);
+    assert.equal(r.move, false);
+  }
+  // A pause, then a deliberate push: counts, and moves once 300 px add up.
+  r = L.overscroll(r.acc, 1, 120, 1000, opts);
+  assert.equal(r.move, false);
+  assert.ok(r.progress > 0);
+  r = L.overscroll(r.acc, 1, 120, 1016, opts);
+  assert.equal(r.move, false);
+  r = L.overscroll(r.acc, 1, 120, 1032, opts);
+  assert.equal(r.move, true);
+  // Leaving the edge, or pushing the other way, resets.
+  r = L.overscroll(null, 1, 200, 5000, opts);
+  r = L.overscroll(r.acc, 0, 200, 5016, opts);
+  assert.equal(r.acc.total, 0);
+  r = L.overscroll(r.acc, -1, 200, 6000, opts);
+  assert.equal(r.move, false);
+  assert.equal(L.overscroll(r.acc, -1, -200, 6016, opts).move, false);
+});
+
+test("a file's reviews: steps anchoring it, in order, with the matching anchor", () => {
+  const walk = {
+    steps: [
+      { id: "a", anchors: [{ path: "x.py", line_start: 1, line_end: 2 }] },
+      { id: "b", anchors: [{ path: "y.py", line_start: 3, line_end: 4 }, { path: "x.py", line_start: 9, line_end: 9 }] },
+    ],
+    skipped: [{ path: "uv.lock", reason: "lock file" }],
+  };
+  const hits = L.stepsForFile(walk, "x.py");
+  assert.deepEqual(hits.map((h) => [h.step.id, h.anchor.line_start]), [["a", 1], ["b", 9]]);
+  assert.deepEqual(L.stepsForFile(walk, "z.py"), []);
+  assert.deepEqual(L.stepsForFile(null, "x.py"), []);
+  assert.equal(L.skippedReason(walk, "uv.lock"), "lock file");
+  assert.equal(L.skippedReason(walk, "x.py"), null);
+  assert.deepEqual([...L.stepFiles(walk.steps[1])], ["y.py", "x.py"]);
+  assert.equal(L.stepFiles(null).size, 0);
+});
+
+test("summary badges: measured first, then the session's assessments", () => {
+  const stats = { badges: [{ id: "size", label: "Small: 10 lines", level: "good", detail: "d" }] };
+  const walk = { assessments: [{ topic: "tests", verdict: "concern", title: "Thin tests", detail_md: "**why**" }] };
+  const b = L.summaryBadges(stats, walk);
+  assert.deepEqual(b.map((x) => [x.source, x.label, x.level]),
+    [["measured", "Small: 10 lines", "good"], ["assessed", "Thin tests", "concern"]]);
+  assert.notEqual(b[0].key, b[1].key);
+  assert.deepEqual(L.summaryBadges(null, null), []);
+});
+
+test("clicking a changed row takes its whole contiguous block", () => {
+  const rows = [
+    { k: "ctx", o: 1, n: 1 }, { k: "del", o: 2, n: null }, { k: "del", o: 3, n: null },
+    { k: "add", o: null, n: 2 }, { k: "add", o: null, n: 3 }, { k: "add", o: null, n: 4 },
+    { k: "ctx", o: 4, n: 5 }, { k: "del", o: 5, n: null }, { k: "del", o: 6, n: null }, { k: "ctx", o: 7, n: 6 },
+  ];
+  // A modified block: the head lines of its added rows, from any row in it.
+  assert.deepEqual(L.diffBlock(rows, 1), { side: "head", line_start: 2, line_end: 4 });
+  assert.deepEqual(L.diffBlock(rows, 5), { side: "head", line_start: 2, line_end: 4 });
+  // A block that only deletes: its base lines.
+  assert.deepEqual(L.diffBlock(rows, 8), { side: "base", line_start: 5, line_end: 6 });
+  assert.equal(L.diffBlock(rows, 0), null);
+  assert.equal(L.diffBlock(rows, 99), null);
+});
+
+test("references format and parse back, and hand edits are honoured", () => {
+  const files = ["a/b.py", "c.md"];
+  assert.equal(L.formatRef("a/b.py", { side: "head", line_start: 2, line_end: 4 }), "@a/b.py:2-4");
+  assert.equal(L.formatRef("a/b.py", { side: "head", line_start: 7, line_end: 7 }), "@a/b.py:7");
+  assert.equal(L.formatRef("a/b.py", { side: "base", line_start: 5, line_end: 6 }), "@a/b.py:base:5-6");
+  assert.equal(L.formatRef("c.md", null), "@c.md");
+  const refs = L.parseRefs("why @a/b.py:9-3, and @c.md? not @nope.py:1 or me@a/b.py:1 @a/b.py:base:5.", files);
+  assert.deepEqual(refs, [
+    { path: "a/b.py", side: "head", line_start: 3, line_end: 9 },
+    { path: "c.md", side: "head", line_start: null, line_end: null },
+    { path: "a/b.py", side: "base", line_start: 5, line_end: 5 },
+  ]);
+  assert.deepEqual(L.refAnchor(refs), { path: "a/b.py", side: "head", line_start: 3, line_end: 9 });
+  assert.equal(L.refAnchor(L.parseRefs("@c.md", files)), null);
+  assert.deepEqual(L.parseRefs("@a/b.py:0", files), []);
+});
+
+test("@ completion finds the word being typed and ranks file names first", () => {
+  assert.deepEqual(L.completion("look at @ser", 12), { start: 8, query: "ser" });
+  assert.deepEqual(L.completion("@", 1), { start: 0, query: "" });
+  assert.equal(L.completion("mail@x", 6), null);
+  assert.equal(L.completion("@a.py:12", 8), null);
+  assert.equal(L.completion("@a.py done", 10), null);
+  const files = ["app/service.py", "tests/test_service.py", "docs/services.md", "server/app.py"];
+  assert.deepEqual(L.matchFiles(files, "serv"), ["app/service.py", "docs/services.md", "tests/test_service.py", "server/app.py"]);
+  assert.deepEqual(L.matchFiles(files, "SERVICE"), ["app/service.py", "docs/services.md", "tests/test_service.py"]);
+  assert.equal(L.matchFiles(files, "", 2).length, 2);
+});
+
+test("each block of changed rows starts once, keyed by its line range", () => {
+  const rows = [
+    { k: "ctx", o: 1, n: 1 }, { k: "del", o: 2, n: null }, { k: "add", o: null, n: 2 },
+    { k: "add", o: null, n: 3 }, { k: "ctx", o: 3, n: 4 }, { k: "del", o: 4, n: null }, { k: "ctx", o: 5, n: 5 },
+  ];
+  const starts = L.blockStarts(rows);
+  assert.deepEqual([...starts.keys()], [1, 5]);
+  assert.equal(L.blockKey(starts.get(1)), "head:2-3");
+  assert.equal(L.blockKey(starts.get(5)), "base:4-4");
+  assert.equal(L.blockStarts([]).size, 0);
+});
+
+test("block explanations: the latest light-bulb question per block of a file", () => {
+  const a = { path: "x.py", side: "head", line_start: 2, line_end: 3 };
+  const qs = [
+    { id: "q1", explain: true, anchor: a },
+    { id: "q2", explain: false, anchor: a },
+    { id: "q3", explain: true, anchor: Object.assign({}, a, { path: "y.py" }) },
+    { id: "q4", explain: true, anchor: a },
+  ];
+  const m = L.explainByBlock(qs, "x.py");
+  assert.deepEqual([...m.keys()], ["head:2-3"]);
+  assert.equal(m.get("head:2-3").id, "q4");
+});
+
+test("the chat holds every question but block explanations, oldest first", () => {
+  const qs = [
+    { id: "b", ts: "2026-09-27T10:00:05Z" },
+    { id: "x", ts: "2026-09-27T10:00:01Z", explain: true },
+    { id: "new" },
+    { id: "a", ts: "2026-09-27T10:00:01Z" },
+  ];
+  assert.deepEqual(L.chatQuestions(qs).map((q) => q.id), ["a", "b", "new"]);
+});
+
+test("chat status counts answers being written and finished ones not yet seen", () => {
+  const qs = [{ id: "q1", ts: "1" }, { id: "q2", ts: "2" }, { id: "q3", ts: "3" }, { id: "q4", ts: "4", explain: true }];
+  const replies = new Map([["q1", { text: "done", done: true }], ["q2", { text: "part", done: false }]]);
+  // q3 has no reply at all yet: pending too. q4 is a block explanation: not counted.
+  assert.deepEqual(L.chatStatus(qs, replies, new Set()), { pending: 2, unread: 1 });
+  assert.deepEqual(L.chatStatus(qs, replies, new Set(["q1"])), { pending: 2, unread: 0 });
+});
+
+test("adding a reference never repeats one; overlapping ones merge", () => {
+  const files = ["a.py", "b.py"];
+  const blk = { side: "head", line_start: 10, line_end: 14 };
+  let r = L.mergeRef("", files, "a.py", blk);
+  assert.equal(r.text, "@a.py:10-14 ");
+  // The same block again: unchanged.
+  assert.equal(L.mergeRef(r.text, files, "a.py", blk).text, "@a.py:10-14 ");
+  // A line inside it: unchanged.
+  assert.equal(L.mergeRef("why @a.py:10-14 here", files, "a.py", { side: "head", line_start: 12, line_end: 12 }).text,
+    "why @a.py:10-14 here");
+  // A line first, then its block: one reference, widened.
+  r = L.mergeRef("why @a.py:12?", files, "a.py", blk);
+  assert.equal(r.text, "why @a.py:10-14?");
+  assert.equal(r.caret, "why @a.py:10-14".length);
+  // Two references a new block bridges: merged into one.
+  assert.equal(L.mergeRef("@a.py:3 and @a.py:20", files, "a.py", { side: "head", line_start: 4, line_end: 19 }).text,
+    "@a.py:3-20 and");
+  // Another file, another side, or a gap: added, not merged.
+  assert.equal(L.mergeRef("@a.py:3", files, "b.py", blk).text, "@a.py:3 @b.py:10-14 ");
+  assert.equal(L.mergeRef("@a.py:12", files, "a.py", { side: "base", line_start: 12, line_end: 12 }).text,
+    "@a.py:12 @a.py:base:12 ");
+  assert.equal(L.mergeRef("@a.py:1", files, "a.py", { side: "head", line_start: 5, line_end: 6 }, 0).text,
+    "@a.py:5-6 @a.py:1");
+});
+
 let failed = 0;
 for (const [name, fn] of tests) {
   try {

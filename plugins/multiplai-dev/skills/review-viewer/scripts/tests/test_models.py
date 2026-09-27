@@ -84,3 +84,65 @@ def test_validate_cli_ok_and_broken(tmp_path):
     bad = _validate_cli(broken)
     assert bad.returncode == 1
     assert "FAIL" in bad.stdout
+
+
+# --- walkthrough.json v1 -------------------------------------------------------------
+
+from review_viewer.models import (  # noqa: E402
+    WALKTHROUGH_SCHEMA_PATH, InboxRow, Walkthrough, walkthrough_schema_text)
+
+SHA = "a" * 40
+
+
+def walkthrough_data() -> dict:
+    return {
+        "schema_version": 1, "generated_at": "2026-09-26T10:00:00Z", "base_sha": SHA,
+        "head_sha": "b" * 40, "overview_md": "What this change is for.",
+        "steps": [{"id": "core-change", "title": "The core change", "body_md": "Text.",
+                   "anchors": [{"path": "app/service.py", "side": "head", "line_start": 1,
+                                "line_end": 3}],
+                   "diagram": {"kind": "mermaid", "source": "flowchart LR\n A --> B"},
+                   "finding_ids": ["b561bd34ce"]}],
+        "skipped": [{"path": "uv.lock", "reason": "generated"}], "complete": False,
+    }
+
+
+def test_committed_walkthrough_schema_matches_fresh_export():
+    assert WALKTHROUGH_SCHEMA_PATH.read_text(encoding="utf-8") == walkthrough_schema_text(), \
+        "run: python -m review_viewer export-schema"
+
+
+def test_walkthrough_validates_against_model_and_committed_schema():
+    Walkthrough.model_validate(walkthrough_data())
+    schema = json.loads(WALKTHROUGH_SCHEMA_PATH.read_text(encoding="utf-8"))
+    jsonschema.Draft202012Validator.check_schema(schema)
+    jsonschema.validate(walkthrough_data(), schema)
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda d: d.update(surprise=True),
+    lambda d: d["steps"][0].update(id="Has Spaces"),
+    lambda d: d["steps"][0].update(anchors=[]),
+    lambda d: d["steps"][0]["anchors"][0].update(side="left"),
+    lambda d: d["steps"][0]["anchors"][0].update(line_start=0),
+    lambda d: d["steps"][0].update(finding_ids=["XYZ"]),
+    lambda d: d["steps"][0]["diagram"].update(kind="plantuml"),
+    lambda d: d["steps"][0]["diagram"].update(source="x" * 20001),
+    lambda d: d.update(schema_version=2),
+    lambda d: d.update(head_sha="short"),
+])
+def test_walkthrough_rejects(mutate):
+    data = walkthrough_data()
+    mutate(data)
+    with pytest.raises(ValidationError):
+        Walkthrough.model_validate(data)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(data, json.loads(WALKTHROUGH_SCHEMA_PATH.read_text(encoding="utf-8")))
+
+
+def test_inbox_row_carries_an_optional_step_id():
+    row = InboxRow(id="q-1", ts="t", target="t", kind="question", text="x", step_id="core-change")
+    assert row.model_dump()["step_id"] == "core-change"
+    assert InboxRow(id="q-1", ts="t", target="t", kind="question", text="x").step_id is None
+    with pytest.raises(ValidationError):
+        InboxRow(id="q-1", ts="t", target="t", kind="question", text="x", step_id="Bad Id")

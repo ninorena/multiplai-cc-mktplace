@@ -19,7 +19,7 @@ authoring**. Part of the [`multiplai`](../../README.md) marketplace.
 | `plan` | Author self-contained, executable implementation plans with verifiable "Done means" criteria — hand the file to a fresh session, a goal runner, or buildme. |
 | `deepen` | Find deepening opportunities — collapse shallow modules into deep ones; idiom packs for Python, Swift, TypeScript, React. |
 | `review` | Code review as a pipeline of separate agents (find, verify, prescribe, check) with gates in code that reject any finding or fix whose cited lines are not at the reviewed commit; writes a markdown review, a short summary it pastes into chat, rollups and a `findings.json`, then opens it in `review-viewer`. |
-| `review-viewer` | Local web page showing each code-review finding beside the code at the reviewed commit; questions and accept/reject decisions typed there reach the live session, and its answers appear in the page. |
+| `review-viewer` | Local web page for a PR, a branch, unpushed commits or a commit range: a step-by-step walkthrough the session writes, and a code review's findings beside the code when one exists; questions and accept/reject decisions typed there reach the live session, and its answers appear in the page. |
 | `codebase-walkthrough` | Interactive walkthrough of any codebase — Markdown doc plus self-contained HTML with step-through navigation. |
 | `learn-stack` | Generate an interactive framework learning guide from any codebase. |
 | `e2e-test` | End-to-end testing for web apps — frontend (browser-based) and backend (API) modes. |
