@@ -336,9 +336,10 @@ class TestSelfReferencesUpdated:
         assert CONTEXT_MANAGER_PATH.is_file(), "context_manager.py must exist"
         text = CONTEXT_MANAGER_PATH.read_text()
         # The original had: setup_logging("context_router")
-        assert 'setup_logging("context_manager")' in text or \
-               "setup_logging('context_manager')" in text, \
+        assert re.search(r"""setup_logging\(\s*["']context_manager["']""", text), \
             "Logger must use 'context_manager' as name"
+        assert "context_router" not in re.findall(
+            r"""setup_logging\(\s*["'](\w+)["']""", text)
 
     def test_docstring_updated(self):
         """WHEN the module docstring of context_manager.py is read

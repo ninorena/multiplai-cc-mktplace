@@ -16,6 +16,29 @@ are the release dates recorded at the time, not derived from a tag.
 
 ## [Unreleased]
 
+## [0.55.1] - 2026-09-27
+
+### Fixed
+
+- **A slow memory-router call no longer costs the prompt its memory, and no
+  longer runs the hook into its 30s timeout.** When the router's model call
+  passed its 25s deadline and the call would not cancel cleanly, the hook kept
+  waiting until Claude Code killed it ("Raise the hook's timeout"). The
+  prompt got no memory and the log said nothing after `HOOK_ENTRY`. The
+  router now gives up at the deadline, falls back to the offline
+  token_overlap ranking, and logs why.
+
+### Added
+
+- **`context_manager.log` now says why a router call was slow.** The router's
+  own warnings and multiplai-core's SDK lines (call start, `CLI ready after
+  Ns`, `first reply after Ns`, the path of the CLI's debug log) now reach the
+  file; before, they went only to the hook's stderr. If the hook is still
+  running at 26s, it logs `HOOK_WATCHDOG` with the stage it is stuck in, then
+  `HOOK_WATCHDOG_DETAIL` with a timed DNS lookup and TCP connect to the API
+  host and the last lines of the CLI's debug log. The watchdog needs a
+  multiplai-core with `hook_run(watchdog_s=)`; on an older core it stays off.
+
 ## [0.55.0] - 2026-09-17
 
 ### Added

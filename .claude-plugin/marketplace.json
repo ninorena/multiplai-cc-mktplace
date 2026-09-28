@@ -10,7 +10,7 @@
       "name": "multiplai-context",
       "source": "./plugins/multiplai-context",
       "description": "Context routing, continuous learning, session awareness, and memory management for Claude Code.",
-      "version": "0.55.0",
+      "version": "0.55.1",
       "author": {
         "name": "Spike",
         "email": "fsm@spikelab.org"

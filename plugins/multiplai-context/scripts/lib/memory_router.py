@@ -707,6 +707,64 @@ def _parse_llm_multi_selection(
     return result
 
 
+# How long a timed-out router call's cancelled task gets to tear down (close
+# the CLI subprocess) before the event loop is abandoned. Bounded, because the
+# teardown is exactly the thing that can wedge.
+_LEFTOVER_GRACE_S = 1.0
+
+
+def _run_without_awaiting_leftovers(coro, grace_s: float = _LEFTOVER_GRACE_S):
+    """``asyncio.run(coro)`` without waiting unboundedly on leftover tasks.
+
+    ``asyncio.run`` cancels every task still pending when *coro* returns and
+    then waits for each to finish. After ``hard_timeout`` gives up on a
+    wedged SDK call, that task is still pending, so ``asyncio.run`` would
+    block on the same teardown ``hard_timeout`` just stepped around. This
+    gives leftovers *grace_s* seconds, then closes the loop regardless.
+
+    A child process the leftover task started is not killed here; it outlives
+    the loop (verified with a stub whose wait ignores cancellation). The SDK
+    gives the CLI its own stdin/stdout/stderr pipes, so an orphaned CLI cannot
+    hold the hook's output open, and its stdin reaches EOF when this process
+    exits.
+
+    Like ``asyncio.run``, refuses to run inside a running loop (raises
+    ``RuntimeError``, which ``select_multi`` degrades on) rather than
+    replacing that loop as the thread's current one.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        pass
+    else:
+        coro.close()
+        raise RuntimeError(
+            "_run_without_awaiting_leftovers() cannot be called from a "
+            "running event loop"
+        )
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        try:
+            pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+            for task in pending:
+                task.cancel()
+            if pending:
+                logger.warning(
+                    "LLMRouter: %d task(s) still pending after the call; "
+                    "giving them %.1fs to tear down, then leaving them",
+                    len(pending), grace_s,
+                )
+                loop.run_until_complete(asyncio.wait(pending, timeout=grace_s))
+        except Exception:
+            logger.debug("Leftover-task teardown raised", exc_info=True)
+        finally:
+            asyncio.set_event_loop(None)
+            loop.close()
+
+
 class RouterCallFailed(Exception):
     """The model call did not produce an answer — timeout, transport, or loop.
 
@@ -831,7 +889,7 @@ class LLMRouter:
             return empty
 
         try:
-            picks = asyncio.run(
+            picks = _run_without_awaiting_leftovers(
                 self._bounded_select_multi(prompt, last_response, corpora, known_per_corpus)
             )
         except RouterCallFailed as e:
@@ -878,13 +936,23 @@ class LLMRouter:
         A timeout raises rather than returning empty: an empty answer from a
         router that *ran* reads downstream as a deliberate abstention, and
         abstention suppresses the context manager's own recency net.
+
+        ``hard_timeout``, not ``asyncio.wait_for``: on timeout ``wait_for``
+        cancels the call and then *waits for the cancellation to finish*, and
+        the SDK's cancellation tears down the CLI subprocess, which can wedge.
+        On 2026-09-27 00:38 a Haiku call got no reply, the 25s deadline
+        passed, and the hook was still inside ``wait_for`` when the harness
+        killed it at 30s: no RouterCallFailed, no fallback, no log line.
+        ``hard_timeout`` cancels without waiting and raises at the deadline.
         """
+        from multiplai_core.aio import hard_timeout
+
         try:
-            return await asyncio.wait_for(
+            return await hard_timeout(
                 self._select_async_multi(
                     prompt, last_response, corpora, known_per_corpus
                 ),
-                timeout=self._timeout_seconds,
+                self._timeout_seconds,
             )
         except asyncio.TimeoutError:
             raise RouterCallFailed(

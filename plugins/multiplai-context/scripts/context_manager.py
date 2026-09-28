@@ -55,6 +55,7 @@ from lib.banks import (
 from lib.banks import resolve_ref as resolve_bank_ref
 from lib.banks import split_ref as split_bank_pick
 from lib.hook_input import read_hook_input
+from lib.hook_watchdog import make_on_watchdog
 from lib.memory_router import create_router
 from lib.plugin_skills import plugin_skill_owners, qualify
 from lib import reference_docs
@@ -69,7 +70,19 @@ from lib.transcript_helper import read_last_assistant_response
 from generators.base import CATALOG_SCHEMA_VERSION
 from generators.config import load_catalog_config
 
-logger = setup_logging("context_manager")
+# Forward the router's and multiplai_core's loggers into context_manager.log.
+# Without this, every line they wrote (the router's timeout/degrade warning,
+# run_agent's START/DONE/FAIL and CLI debug-log path) reached only the hook's
+# stderr, and context_manager.log never showed why a router call was slow.
+logger = setup_logging(
+    "context_manager", propagate_loggers=("multiplai_core", "lib"),
+)
+
+# Seconds into the run at which the watchdog logs the stage still running and
+# probes the network. Must stay under this hook's "timeout" in
+# hooks/hooks.json (30s; a test enforces the gap) with room for the probes,
+# which take at most ~2.4s.
+_WATCHDOG_S = 26.0
 
 # Catalog types supported by _read_catalog_or_scan()
 _KNOWN_CATALOG_TYPES = frozenset({"memory", "banks", "diary", "skills"})
@@ -1195,6 +1208,28 @@ def _emit_result(context: str) -> None:
     }))
 
 
+def _watchdog_kwargs() -> dict:
+    """``hook_run`` watchdog arguments, or ``{}`` on a core without them.
+
+    ``watchdog_s``/``on_watchdog`` arrived in multiplai-core after the version
+    this plugin first locked. Passing them to an older ``hook_run`` would
+    raise TypeError on every prompt, so the watchdog is armed only when the
+    resolved core accepts it.
+    """
+    import inspect
+
+    try:
+        params = inspect.signature(hook_run).parameters
+    except (TypeError, ValueError):
+        return {}
+    if "watchdog_s" not in params or "on_watchdog" not in params:
+        return {}
+    return {
+        "watchdog_s": _WATCHDOG_S,
+        "on_watchdog": make_on_watchdog(logger, lambda: get_paths().logs_dir()),
+    }
+
+
 def main() -> None:
     """Context manager main: read stdin, route context, write JSON to stdout."""
     # Read stdin and name the session *before* opening hook_run, so the
@@ -1214,7 +1249,10 @@ def main() -> None:
 
     session_id = input_data.get("session_id")
     setup_logging("context_manager", session_id=session_id or "")
-    with hook_run("context_manager", logger, session_id=session_id or "") as run:
+    with hook_run(
+        "context_manager", logger, session_id=session_id or "",
+        **_watchdog_kwargs(),
+    ) as run:
         _assemble_and_emit(input_data, run)
 
 

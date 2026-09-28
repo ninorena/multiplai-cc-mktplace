@@ -1,7 +1,9 @@
 """Tests for scripts/lib/memory_router.py."""
 
 import asyncio
+import contextlib
 import json
+import os
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1159,3 +1161,159 @@ class TestHybridRouter:
         router = mr.create_router("llm_hybrid", keep_ratio=0.42)
         assert router._gate is router._llm._fallback
         assert router._gate.keep_ratio == 0.42
+
+
+class TestLLMRouterReturnsWhenTeardownWedges:
+    """The 2026-09-27 00:38 kill: a call that will not cancel.
+
+    The SDK tears down the CLI subprocess when its task is cancelled, and that
+    teardown can hang. ``asyncio.wait_for`` waits for the cancellation it
+    triggers, and ``asyncio.run`` waits for every leftover task on exit, so a
+    wedged teardown held the hook past the 25s router deadline until the
+    harness killed it at 30s, with no fallback and no log line. The earlier
+    timeout tests used a plain ``asyncio.sleep``, which cancels cleanly, so
+    they could not see this.
+    """
+
+    WEDGE_S = 4.0
+
+    def _catalog(self) -> list[dict]:
+        return [
+            {"source": "writing.md", "summary": "voice guide",
+             "intent_domains": ["writing"]},
+            {"source": "python.md", "summary": "py patterns",
+             "intent_domains": ["python code"]},
+        ]
+
+    def _wedged_client(self):
+        wedge_s = self.WEDGE_S
+
+        async def _create(**kwargs):
+            client = MagicMock()
+
+            async def _query(**_):
+                # Swallow every cancellation until wedge_s has passed, the way
+                # a hung subprocess teardown holds a cancelled task open.
+                loop = asyncio.get_running_loop()
+                end = loop.time() + wedge_s
+                while loop.time() < end:
+                    try:
+                        await asyncio.sleep(end - loop.time())
+                    except asyncio.CancelledError:
+                        continue
+
+            client.query = _query
+            return client
+
+        return _create
+
+    def test_degrades_within_deadline_plus_grace(self):
+        import time
+
+        from lib.memory_router import _LEFTOVER_GRACE_S, LLMRouter
+
+        router = LLMRouter(timeout_seconds=0.2)
+        started = time.monotonic()
+        with patch("multiplai_core.model_client.create_client", self._wedged_client()):
+            picks = router.select_multi(
+                "help me debug python code", None,
+                {"memory": self._catalog(), "skills": [], "resources": []},
+            )["memory"]
+        elapsed = time.monotonic() - started
+
+        assert picks == ["python.md"], "a wedged call must still degrade to token_overlap"
+        assert elapsed < 0.2 + _LEFTOVER_GRACE_S + 1.0, (
+            f"select_multi took {elapsed:.1f}s; it waited on the wedged "
+            f"teardown ({self.WEDGE_S}s) instead of returning at the deadline"
+        )
+
+    def test_degrade_reason_reaches_the_log(self, caplog):
+        import logging
+
+        from lib.memory_router import LLMRouter
+
+        router = LLMRouter(timeout_seconds=0.1)
+        with caplog.at_level(logging.WARNING, logger="lib.memory_router"), \
+                patch("multiplai_core.model_client.create_client", self._wedged_client()):
+            router.select_multi(
+                "help me debug python code", None,
+                {"memory": self._catalog(), "skills": [], "resources": []},
+            )
+        messages = [r.getMessage() for r in caplog.records]
+        assert any("timed out after 0.1s; degrading to token_overlap" in m for m in messages)
+        assert any("still pending after the call" in m for m in messages)
+
+    def test_refuses_to_run_inside_a_running_loop(self):
+        from lib.memory_router import _run_without_awaiting_leftovers
+
+        async def _inner():
+            async def _noop():
+                return 1
+
+            with pytest.raises(RuntimeError, match="running event loop"):
+                _run_without_awaiting_leftovers(_noop())
+            # The outer loop is still this thread's current loop.
+            assert asyncio.get_running_loop() is loop_holder["loop"]
+
+        loop_holder: dict = {}
+
+        async def _main():
+            loop_holder["loop"] = asyncio.get_running_loop()
+            await _inner()
+
+        asyncio.run(_main())
+
+    def test_hook_process_exits_with_a_wedged_real_subprocess(self, tmp_path):
+        """End to end, in a child interpreter: a real subprocess whose wait
+        swallows cancellation, and the interpreter must still exit promptly
+        after the router degrades.
+
+        The stub child gets its own stdio, as the SDK gives the CLI its own
+        pipes. With inherited stdio it would hold this test's capture pipe
+        open for its whole sleep, which times the child, not the hook."""
+        import subprocess
+        import time
+
+        pidfile = tmp_path / "sleeper.pid"
+        script = tmp_path / "hook.py"
+        script.write_text(
+            "import asyncio, sys\n"
+            f"sys.path.insert(0, {str(SCRIPTS_DIR)!r})\n"
+            "from unittest.mock import MagicMock, patch\n"
+            "from lib.memory_router import LLMRouter\n"
+            "async def _create(**kw):\n"
+            "    c = MagicMock()\n"
+            "    async def _query(**_):\n"
+            "        proc = await asyncio.create_subprocess_exec(\n"
+            "            'sleep', '30', stdin=asyncio.subprocess.PIPE,\n"
+            "            stdout=asyncio.subprocess.DEVNULL,\n"
+            "            stderr=asyncio.subprocess.DEVNULL)\n"
+            f"        open({str(pidfile)!r}, 'w').write(str(proc.pid))\n"
+            "        while True:\n"
+            "            try:\n"
+            "                await proc.wait()\n"
+            "                return\n"
+            "            except asyncio.CancelledError:\n"
+            "                continue\n"
+            "    c.query = _query\n"
+            "    return c\n"
+            "cat = [{'source': 'python.md', 'summary': 'py', 'intent_domains': ['python code']}]\n"
+            "with patch('multiplai_core.model_client.create_client', _create):\n"
+            "    picks = LLMRouter(timeout_seconds=0.5).select_multi(\n"
+            "        'help me debug python code', None,\n"
+            "        {'memory': cat, 'skills': [], 'resources': []})\n"
+            "print('PICKS', picks['memory'], flush=True)\n"
+        )
+        started = time.monotonic()
+        proc = subprocess.run(
+            [sys.executable, str(script)], capture_output=True, text=True, timeout=20,
+        )
+        elapsed = time.monotonic() - started
+        assert "PICKS ['python.md']" in proc.stdout, proc.stderr[-2000:]
+        assert elapsed < 8, f"hook process took {elapsed:.1f}s to exit"
+
+        # Not something the router guarantees (see
+        # _run_without_awaiting_leftovers): just don't leave the stub's
+        # sleeper running after the test.
+        with contextlib.suppress(ProcessLookupError, ValueError, FileNotFoundError):
+            os.kill(int(pidfile.read_text()), 9)
