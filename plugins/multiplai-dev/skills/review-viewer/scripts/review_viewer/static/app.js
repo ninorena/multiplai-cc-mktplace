@@ -157,7 +157,10 @@
 
   async function diagramUrl(source) {
     if (diagramCache.has(source)) return diagramCache.get(source);
-    const dark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+    // The mode theme.js resolved (the header's button, or the system setting).
+    const mode = document.documentElement.getAttribute("data-mode");
+    const dark = mode ? mode === "dark"
+      : window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
     if (!mermaidReady) {
       window.mermaid.initialize({
         startOnLoad: false, securityLevel: "strict", theme: dark ? "dark" : "default",
@@ -247,7 +250,8 @@
     $("title").textContent = target.label;
     document.title = target.label + " · review";
     renderHeader();
-    renderSidebar();
+    renderFindingList();
+    renderFiles();
     renderTabs();
     renderWalk();
     renderSummary();
@@ -545,9 +549,9 @@
     }
   }
 
-  // --- sidebar ---------------------------------------------------------------
+  // --- findings list (top of the Findings tab) -----------------------------------
 
-  function renderSidebar() {
+  function renderFindingList() {
     const box = $("findings");
     box.replaceChildren();
     const findings = state.detail.findings.findings;
@@ -566,7 +570,10 @@
           class: "finding-item" + (f.id === state.selected ? " selected" : "") +
             (L.isHidden(f, state.detail.decisions) ? " hidden-finding" : ""),
           "data-id": f.id,
-          onclick: () => selectFinding(f.id),
+          onclick: async () => {
+            await selectFinding(f.id);
+            $("finding-detail").scrollIntoView({ block: "start", behavior: "smooth" });
+          },
         }, [
           el("span", { class: "badge " + sev, text: f.status }),
           decision ? el("span", { class: "badge " + decision.decision, text: decision.decision }) : null,
@@ -575,7 +582,6 @@
         ]));
       }
     }
-    renderFiles();
   }
 
   function renderFiles() {
@@ -599,62 +605,69 @@
     if (current) current.scrollIntoView({ block: "nearest" });
   }
 
-  // --- sidebar width ---------------------------------------------------------
+  // --- panel widths ----------------------------------------------------------
 
-  const SIDE_KEY = "review-viewer.side-width";
-  const SIDE_DEFAULT = 280;
+  /* The two side panels; the code in the middle takes what is left. `dir` is
+   * which way the handle moves to widen the panel. */
+  const PANELS = {
+    side: { handle: "side-resize", cssVar: "--side-w", key: "review-viewer.side-width", def: 280, min: 160, dir: 1 },
+    detail: { handle: "detail-resize", cssVar: "--detail-w", key: "review-viewer.detail-width", def: 380, min: 240, dir: -1 },
+  };
 
-  function sideLimits() {
-    return [160, Math.max(200, Math.round(window.innerWidth * 0.5))];
+  function panelLimits(p) {
+    return [p.min, Math.max(p.min + 40, Math.round(window.innerWidth * 0.5))];
   }
 
   /* Sets the width through the CSSOM: the CSP forbids style attributes, not this. */
-  function setSideWidth(px, save) {
-    const [min, max] = sideLimits();
+  function setPanelWidth(name, px, save) {
+    const p = PANELS[name];
+    const [min, max] = panelLimits(p);
     const w = L.clampWidth(px, min, max);
     if (w == null) return;
-    document.documentElement.style.setProperty("--side-w", w + "px");
-    $("side-resize").setAttribute("aria-valuenow", String(w));
+    document.documentElement.style.setProperty(p.cssVar, w + "px");
+    $(p.handle).setAttribute("aria-valuenow", String(w));
     if (save) {
-      try { localStorage.setItem(SIDE_KEY, String(w)); } catch (err) { /* private window */ }
+      try { localStorage.setItem(p.key, String(w)); } catch (err) { /* private window */ }
     }
   }
 
-  function sideWidth() {
-    return $("side").getBoundingClientRect().width;
+  function panelWidth(name) {
+    return $(name).getBoundingClientRect().width;
   }
 
   function bindResize() {
-    const handle = $("side-resize");
-    let saved = null;
-    try { saved = localStorage.getItem(SIDE_KEY); } catch (err) { /* private window */ }
-    if (saved) setSideWidth(saved, false);
-    handle.addEventListener("pointerdown", (ev) => {
-      ev.preventDefault();
-      handle.setPointerCapture(ev.pointerId);
-      const startX = ev.clientX;
-      const startW = sideWidth();
-      document.body.classList.add("resizing");
-      const move = (e) => setSideWidth(startW + e.clientX - startX, false);
-      const up = () => {
-        handle.removeEventListener("pointermove", move);
-        handle.removeEventListener("pointerup", up);
-        handle.removeEventListener("pointercancel", up);
-        document.body.classList.remove("resizing");
-        setSideWidth(sideWidth(), true);
-      };
-      handle.addEventListener("pointermove", move);
-      handle.addEventListener("pointerup", up);
-      handle.addEventListener("pointercancel", up);
-    });
-    handle.addEventListener("keydown", (ev) => {
-      const step = ev.shiftKey ? 64 : 16;
-      if (ev.key === "ArrowLeft") setSideWidth(sideWidth() - step, true);
-      else if (ev.key === "ArrowRight") setSideWidth(sideWidth() + step, true);
-      else return;
-      ev.preventDefault();
-    });
-    handle.addEventListener("dblclick", () => setSideWidth(SIDE_DEFAULT, true));
+    for (const [name, p] of Object.entries(PANELS)) {
+      const handle = $(p.handle);
+      let saved = null;
+      try { saved = localStorage.getItem(p.key); } catch (err) { /* private window */ }
+      if (saved) setPanelWidth(name, saved, false);
+      handle.addEventListener("pointerdown", (ev) => {
+        ev.preventDefault();
+        handle.setPointerCapture(ev.pointerId);
+        const startX = ev.clientX;
+        const startW = panelWidth(name);
+        document.body.classList.add("resizing");
+        const move = (e) => setPanelWidth(name, startW + p.dir * (e.clientX - startX), false);
+        const up = () => {
+          handle.removeEventListener("pointermove", move);
+          handle.removeEventListener("pointerup", up);
+          handle.removeEventListener("pointercancel", up);
+          document.body.classList.remove("resizing");
+          setPanelWidth(name, panelWidth(name), true);
+        };
+        handle.addEventListener("pointermove", move);
+        handle.addEventListener("pointerup", up);
+        handle.addEventListener("pointercancel", up);
+      });
+      handle.addEventListener("keydown", (ev) => {
+        const step = ev.shiftKey ? 64 : 16;
+        if (ev.key === "ArrowLeft") setPanelWidth(name, panelWidth(name) - p.dir * step, true);
+        else if (ev.key === "ArrowRight") setPanelWidth(name, panelWidth(name) + p.dir * step, true);
+        else return;
+        ev.preventDefault();
+      });
+      handle.addEventListener("dblclick", () => setPanelWidth(name, p.def, true));
+    }
   }
 
   // --- finding detail ----------------------------------------------------------
@@ -666,7 +679,7 @@
       renderTabs();
     }
     clearPick();
-    renderSidebar();
+    renderFindingList();
     renderDetail();
     const f = state.findingsById.get(id);
     if (f) await openFile(f.file, f.line_start, f.line_end);
@@ -681,13 +694,13 @@
   }
 
   function renderDetail() {
-    const box = $("finding");
+    const box = $("finding-detail");
     box.replaceChildren();
     const f = state.selected && state.findingsById.get(state.selected);
     $("decide").hidden = !f || state.tab !== "finding";
     if (!f) {
       box.appendChild(el("p", { class: "muted", text: state.detail.findings.findings.length
-        ? "Pick a finding on the left, or select lines in the code to ask about them."
+        ? "Pick a finding above, or select lines in the code to ask about them."
         : "Select lines in the code (drag, or click a line number and shift-click another) to ask about them." }));
       renderThread();
       return;
@@ -754,7 +767,7 @@
       const res = await api("/api/decision", { target: state.slug, finding_id: id, decision: decision, note: note });
       state.detail.decisions[id] = res.decision;
       $("decision-note").value = "";
-      renderSidebar();
+      renderFindingList();
       renderDecision();
     } catch (err) {
       showBanner("Could not record the decision: " + err.message);
@@ -1296,8 +1309,10 @@
     const f = state.selected && state.findingsById.get(state.selected);
     const step = askingAboutStep() ? currentStep() : null;
     box.textContent = anchor ? ""
-      : step ? "Linked to review: " + step.title
-        : state.tab === "finding" && f ? "Linked to finding: " + f.claim : "";
+      : step ? "Asking about the open review: " + step.title
+        : state.tab === "finding" && f ? "Asking about the open finding: " + f.claim : "";
+    box.title = box.textContent
+      ? "The session answers with this in mind. Type @ to ask about a file instead." : "";
   }
 
   /* Put "@path:lines" into the question at the caret, with spaces around it. */
@@ -1404,7 +1419,7 @@
     }
     $("show-hidden").addEventListener("change", (ev) => {
       state.showHidden = ev.target.checked;
-      renderSidebar();
+      renderFindingList();
       if (state.view) renderCode();
     });
     $("file-search").addEventListener("input", (ev) => {

@@ -1,0 +1,14 @@
+Fonts bundled with review-viewer (latin subsets, woff2, from Google Fonts).
+All four are licensed under the SIL Open Font License, Version 1.1:
+https://openfontlicense.org/open-font-license-official-text/
+
+font-plexmono-400.woff2, font-plexmono-600.woff2  IBM Plex Mono
+  Copyright © 2017 IBM Corp. with Reserved Font Name "Plex"
+font-vt323.woff2                                   VT323
+  Copyright 2011, The VT323 Project Authors (peter.hull@oikoi.com)
+font-pressstart2p.woff2                            Press Start 2P
+  Copyright 2012 The Press Start 2P Project Authors (cody@zone38.net),
+  with Reserved Font Name "Press Start 2P".
+font-silkscreen.woff2                              Silkscreen
+  Copyright 2001 The Silkscreen Project Authors
+  (https://github.com/googlefonts/silkscreen)

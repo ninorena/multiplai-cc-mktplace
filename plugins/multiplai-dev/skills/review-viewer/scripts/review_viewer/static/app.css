@@ -22,8 +22,34 @@
   color-scheme: light dark;
 }
 
+/* Dark colours: from the mode button (theme.js sets data-mode), or from the
+   system setting if that script did not run. */
+:root[data-mode="dark"] {
+  color-scheme: dark;
+  --bg: #0d1117;
+  --panel: #161b22;
+  --text: #e6edf3;
+  --muted: #8d96a0;
+  --border: #30363d;
+  --accent: #4493f8;
+  --add-bg: #12261e;
+  --add-mark: #3fb950;
+  --del-bg: #2d1316;
+  --del-mark: #f85149;
+  --add-bg: rgba(46, 160, 67, 0.15);
+  --del-bg: rgba(248, 81, 73, 0.10);
+  --add-num: rgba(63, 185, 80, 0.30);
+  --del-num: rgba(248, 81, 73, 0.30);
+  --hl-bg: rgba(68, 147, 248, 0.15);
+  --hl-bar: #4493f8;
+  --gap-bg: #121d2f;
+  --high: #f85149;
+  --medium: #db6d28;
+  --low: #8d96a0;
+}
+:root[data-mode="light"] { color-scheme: light; }
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-mode]) {
     --bg: #0d1117;
     --panel: #161b22;
     --text: #e6edf3;
@@ -104,7 +130,7 @@ kbd {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: var(--side-w, 280px) 6px minmax(0, 1fr) 380px;
+  grid-template-columns: var(--side-w, 280px) 6px minmax(0, 1fr) 6px var(--detail-w, 380px);
   /* One row the height of the window, so each pane scrolls on its own. */
   grid-template-rows: minmax(0, 1fr);
 }
@@ -116,7 +142,7 @@ kbd {
 .resizer { cursor: col-resize; background: transparent; border-left: 1px solid var(--border); touch-action: none; }
 .resizer:hover, .resizer:focus-visible, body.resizing .resizer { background: var(--accent); outline: none; }
 body.resizing { cursor: col-resize; user-select: none; }
-.detail { border-left: 1px solid var(--border); }
+
 .centre { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 
 @media (max-width: 1000px) {
@@ -148,6 +174,11 @@ body.resizing { cursor: col-resize; user-select: none; }
 .finding-item.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .finding-item.hidden-finding { opacity: .6; }
 .finding-item .claim { display: block; }
+/* In the list the claim is cut to two lines; the full text is below it. */
+.finding-list .finding-item .claim { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.finding-detail { border-top: 1px solid var(--border); margin-top: 10px; padding-top: 8px; scroll-margin-top: 48px; }
+.finding-list .sev-h:first-child { margin-top: 4px; }
+.target-select { width: auto; max-width: 40ch; padding: 2px 6px; }
 .finding-item .where { display: block; font: 12px var(--mono); color: var(--muted); }
 .badge {
   display: inline-block;
@@ -400,3 +431,20 @@ img.diagram { display: block; max-width: none; background: var(--bg); }
 .detail { overflow-x: hidden; }
 /* Scrolled to on a click, below the pinned tab bar rather than under it. */
 .walk-step { scroll-margin-top: 48px; }
+.theme-pick { margin-left: auto; font-size: 12px; white-space: nowrap; }
+.theme-pick select { width: auto; padding: 2px 6px; margin-left: 4px; }
+/* The theme menu's option list is drawn by the page, not the OS, where the
+   browser allows it (Chrome 135+); elsewhere it stays the native menu. */
+@supports (appearance: base-select) {
+  .theme-pick select, .theme-pick select::picker(select) { appearance: base-select; }
+  .theme-pick select { font: 12px var(--mono); padding: 2px 6px; background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); cursor: pointer; }
+  .theme-pick select::picker(select) { font: 12px var(--mono); padding: 2px 0; margin-top: 2px;
+    background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    box-shadow: 3px 3px 0 rgba(0, 0, 0, 0.35); }
+  .theme-pick option { padding: 3px 10px; }
+  .theme-pick option:hover, .theme-pick option:focus-visible { background: var(--accent); color: var(--bg); outline: none; }
+  .theme-pick option:checked { font-weight: 600; }
+  .theme-pick option::checkmark { content: "▸"; }
+}
+.mode-btn { font-size: 12px; padding: 2px 8px; white-space: nowrap; }

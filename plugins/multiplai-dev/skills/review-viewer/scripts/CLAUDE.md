@@ -28,7 +28,7 @@ The page-logic tests need `node`; they fail (not skip) without it.
 | `server.py` | `ThreadingHTTPServer` subclass (`allow_reuse_address = False`), request checks, routes, idle watchdog. |
 | `registry.py` | Finds live viewers: probes each mailbox's recorded port with that mailbox's token, in parallel. A token is never sent to any other port. |
 | `netinfo.py` | Container detection (degradation contract rule 2), bind host, URLs to print. |
-| `static/` | `index.html`, `boot.js` (takes the token out of the address bar), `logic.js` (pure functions, tested under node), `app.js`, `app.css`. |
+| `static/` | `index.html`, `boot.js` (takes the token out of the address bar), `theme.js` (applies the saved theme and light/dark mode before first paint as `data-theme`/`data-mode`, fills the Theme menu, drives the mode button), `logic.js` (pure functions, tested under node), `app.js`, `app.css`, `themes.css` (every rule scoped to `html[data-theme]`), the bundled `font-*.woff2` and `FONTS-LICENSE.txt`. |
 
 After changing `models.py`, run `python -m review_viewer export-schema` and
 commit both schemas; `test_models.py` fails while either differs.

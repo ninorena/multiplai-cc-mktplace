@@ -1,0 +1,319 @@
+/* Themes picked in the header (theme.js sets <html data-theme="…">).
+ * theme.js also sets data-mode="light"|"dark", and each theme has a
+ * palette for both. Every rule here is scoped to a theme, so with none picked the page is
+ * exactly app.css. Themes change colours, fonts and edges only — never the
+ * layout. Fonts are bundled (FONTS-LICENSE.txt) because the page's CSP
+ * allows fonts from its own origin only. */
+
+@font-face { font-family: "RV Plex Mono"; font-weight: 400; font-display: swap; src: url(/static/font-plexmono-400.woff2) format("woff2"); }
+@font-face { font-family: "RV Plex Mono"; font-weight: 600 700; font-display: swap; src: url(/static/font-plexmono-600.woff2) format("woff2"); }
+@font-face { font-family: "RV VT323"; font-display: swap; src: url(/static/font-vt323.woff2) format("woff2"); }
+@font-face { font-family: "RV Press Start"; font-display: swap; src: url(/static/font-pressstart2p.woff2) format("woff2"); }
+@font-face { font-family: "RV Silkscreen"; font-display: swap; src: url(/static/font-silkscreen.woff2) format("woff2"); }
+
+/* --- the palettes ------------------------------------------------------ */
+
+/* Green phosphor CRT. Body text is a softer green than the accent, so long
+ * reading does not glare. */
+:root[data-theme="phosphor"][data-mode="dark"] {
+  color-scheme: dark;
+  --bg: #050b06; --panel: #0a140c; --text: #b4f2bd; --muted: #5f9c69; --border: #1f5a2b;
+  --accent: #4dff7a; --sel-bg: #4dff7a; --sel-text: #031006;
+  --head-bg: #0a140c; --head-text: #4dff7a; --foot-bg: #0a140c; --foot-text: #b4f2bd;
+  --add-bg: rgba(77, 255, 122, 0.12); --add-num: rgba(77, 255, 122, 0.24); --add-mark: #4dff7a;
+  --del-bg: rgba(255, 107, 90, 0.13); --del-num: rgba(255, 107, 90, 0.26); --del-mark: #ff7b6b;
+  --hl-bg: rgba(77, 255, 122, 0.10); --hl-bar: #4dff7a; --gap-bg: #0c1f10;
+  --high: #ff7b6b; --medium: #ffd23f; --low: #5f9c69;
+  --syn-kw: #4dff7a; --syn-str: #e8ffb0; --syn-num: #7df9ff; --syn-com: #4d7d56; --syn-fn: #d4ffdc; --syn-type: #9dffb4;
+  --display: "RV VT323", monospace; --d-lg: 24px; --d-md: 20px; --d-sm: 18px;
+  --shadow: #000; --glow: rgba(77, 255, 122, 0.55); --scan: 0.22;
+}
+
+/* Amber monochrome terminal. Additions are a warm yellow-green, deletions
+ * a dim red: still told apart without leaving the amber family. */
+:root[data-theme="amber"][data-mode="dark"] {
+  color-scheme: dark;
+  --bg: #0d0802; --panel: #160e03; --text: #ffcf70; --muted: #a6782c; --border: #5a3d0e;
+  --accent: #ffb000; --sel-bg: #ffb000; --sel-text: #120a00;
+  --head-bg: #160e03; --head-text: #ffb000; --foot-bg: #160e03; --foot-text: #ffcf70;
+  --add-bg: rgba(210, 230, 90, 0.12); --add-num: rgba(210, 230, 90, 0.24); --add-mark: #d8ea6a;
+  --del-bg: rgba(255, 90, 50, 0.14); --del-num: rgba(255, 90, 50, 0.28); --del-mark: #ff7a4d;
+  --hl-bg: rgba(255, 176, 0, 0.10); --hl-bar: #ffb000; --gap-bg: #1f1405;
+  --high: #ff6a3d; --medium: #ffb000; --low: #a6782c;
+  --syn-kw: #ffb000; --syn-str: #ffe7a8; --syn-num: #ff9e4a; --syn-com: #7d5a22; --syn-fn: #fff0c8; --syn-type: #ffd27a;
+  --display: "RV VT323", monospace; --d-lg: 24px; --d-md: 20px; --d-sm: 18px;
+  --shadow: #000; --glow: rgba(255, 176, 0, 0.5); --scan: 0.22;
+}
+
+/* DOS text-mode IDE: blue editor, grey menu bar, cyan status bar, the
+ * 16-colour VGA palette. */
+:root[data-theme="turbo"][data-mode="dark"] {
+  color-scheme: dark;
+  --bg: #0000aa; --panel: #00008a; --text: #f0f0f0; --muted: #55ffff; --border: #55ffff;
+  --accent: #ffff55; --sel-bg: #00aaaa; --sel-text: #000;
+  --head-bg: #aaaaaa; --head-text: #000; --foot-bg: #00aaaa; --foot-text: #000;
+  --add-bg: #005f5f; --add-num: #008080; --add-mark: #55ff55;
+  --del-bg: #5f0050; --del-num: #800070; --del-mark: #ff5555;
+  --hl-bg: rgba(255, 255, 85, 0.12); --hl-bar: #ffff55; --gap-bg: #000080;
+  --high: #ff5555; --medium: #ffff55; --low: #aaaaaa;
+  --syn-kw: #ffff55; --syn-str: #55ffff; --syn-num: #ff55ff; --syn-com: #aaaaaa; --syn-fn: #ffffff; --syn-type: #55ff55;
+  --display: "RV VT323", monospace; --d-lg: 24px; --d-md: 20px; --d-sm: 18px;
+  --shadow: #000; --glow: transparent; --scan: 0;
+}
+
+/* Black and white, one bit per pixel, like an early Mac. Diff rows are
+ * told apart by two greys, a pattern in the line-number column and the
+ * +/− marks; the code itself sits on flat grey so it stays legible;
+ * severities by fill and border style. */
+:root[data-theme="onebit"][data-mode="light"] {
+  color-scheme: light;
+  --bg: #fff; --panel: #fff; --text: #000; --muted: #555; --border: #000;
+  --accent: #000; --sel-bg: #000; --sel-text: #fff;
+  --head-bg: repeating-linear-gradient(#000 0 1px, #fff 1px 3px); --head-text: #000; --foot-bg: #fff; --foot-text: #000;
+  --add-bg: #f0f0f0; --add-num: radial-gradient(#aaa 0.8px, transparent 1px) 0 0 / 3px 3px, #fff; --add-mark: #000;
+  --del-bg: #dcdcdc; --del-num: repeating-linear-gradient(135deg, #b4b4b4 0 1px, transparent 1px 4px), #fff; --del-mark: #000;
+  --hl-bg: rgba(0, 0, 0, 0.07); --hl-bar: #000; --gap-bg: #efefef;
+  --high: #000; --medium: #000; --low: #555;
+  --syn-kw: #000; --syn-str: #444; --syn-num: #000; --syn-com: #777; --syn-fn: #000; --syn-type: #000;
+  --display: "RV Silkscreen", monospace; --d-lg: 18px; --d-md: 12px; --d-sm: 12px;
+  --shadow: #000; --glow: transparent; --scan: 0;
+}
+
+/* The original handheld's four greens. */
+:root[data-theme="gameboy"][data-mode="light"] {
+  color-scheme: light;
+  --bg: #9bbc0f; --panel: #8bac0f; --text: #0f380f; --muted: #306230; --border: #306230;
+  --accent: #0f380f; --sel-bg: #0f380f; --sel-text: #9bbc0f;
+  --head-bg: #0f380f; --head-text: #9bbc0f; --foot-bg: #8bac0f; --foot-text: #0f380f;
+  --add-bg: #b4d23a; --add-num: #c6e04e; --add-mark: #0f380f;
+  --del-bg: #83a30e; --del-num: repeating-linear-gradient(135deg, rgba(15, 56, 15, 0.3) 0 1px, transparent 1px 4px), #8bac0f; --del-mark: #0f380f;
+  --hl-bg: rgba(15, 56, 15, 0.12); --hl-bar: #0f380f; --gap-bg: #8bac0f;
+  --high: #0f380f; --medium: #0f380f; --low: #306230;
+  --syn-kw: #0f380f; --syn-str: #306230; --syn-num: #0f380f; --syn-com: #4a7a2a; --syn-fn: #0f380f; --syn-type: #0f380f;
+  --display: "RV Press Start", monospace; --d-lg: 13px; --d-md: 8px; --d-sm: 9px;
+  --shadow: #0f380f; --glow: transparent; --scan: 0;
+}
+
+/* Solarized dark (Ethan Schoonover's palette). Body text is base1 rather
+ * than base0: base0 on base03 is the palette's intent but reads dim for
+ * long prose. */
+:root[data-theme="solarized"][data-mode="dark"] {
+  color-scheme: dark;
+  --bg: #002b36; --panel: #073642; --text: #93a1a1; --muted: #657b83; --border: #1c4f5c;
+  --accent: #268bd2; --sel-bg: #268bd2; --sel-text: #fdf6e3;
+  --head-bg: #073642; --head-text: #93a1a1; --foot-bg: #073642; --foot-text: #93a1a1;
+  --add-bg: rgba(133, 153, 0, 0.16); --add-num: rgba(133, 153, 0, 0.30); --add-mark: #859900;
+  --del-bg: rgba(220, 50, 47, 0.16); --del-num: rgba(220, 50, 47, 0.30); --del-mark: #dc322f;
+  --hl-bg: rgba(38, 139, 210, 0.14); --hl-bar: #268bd2; --gap-bg: #04313c;
+  --high: #dc322f; --medium: #cb4b16; --low: #657b83;
+  --syn-kw: #859900; --syn-str: #2aa198; --syn-num: #d33682; --syn-com: #586e75; --syn-fn: #268bd2; --syn-type: #b58900;
+  --display: "RV VT323", monospace; --d-lg: 24px; --d-md: 20px; --d-sm: 18px;
+  --shadow: #001e26; --glow: transparent; --scan: 0;
+}
+:root[data-theme="solarized"] .top h1, :root[data-theme="solarized"] .sev-h.MEDIUM { color: #b58900; }
+:root[data-theme="solarized"] .side-h, :root[data-theme="solarized"] .detail .label { color: #2aa198; }
+
+/* --- light and dark counterparts ------------------------------------------- */
+
+/* Phosphor, light: a green-bar printout of the same terminal. */
+:root[data-theme="phosphor"][data-mode="light"] {
+  color-scheme: light;
+  --bg: #f3faf3; --panel: #e4f2e5; --text: #0b3d17; --muted: #4c7a55; --border: #9cc9a3;
+  --accent: #127a30; --sel-bg: #127a30; --sel-text: #f3faf3;
+  --head-bg: #0b3d17; --head-text: #b4f2bd; --foot-bg: #e4f2e5; --foot-text: #0b3d17;
+  --add-bg: #d3f2d9; --add-num: #b6e8c0; --add-mark: #127a30;
+  --del-bg: #fbe0dc; --del-num: #f5c3bb; --del-mark: #b3261e;
+  --hl-bg: rgba(18, 122, 48, 0.10); --hl-bar: #127a30; --gap-bg: #dcefdf;
+  --high: #b3261e; --medium: #946200; --low: #4c7a55;
+  --syn-kw: #127a30; --syn-str: #6a5a00; --syn-num: #00707a; --syn-com: #6f9476; --syn-fn: #0b3d17; --syn-type: #1f6b3a;
+  --display: "RV VT323", monospace; --d-lg: 24px; --d-md: 20px; --d-sm: 18px;
+  --shadow: #9cc9a3; --glow: transparent; --scan: 0;
+}
+
+/* Amber, light: amber ink on warm paper. */
+:root[data-theme="amber"][data-mode="light"] {
+  color-scheme: light;
+  --bg: #fdf7ea; --panel: #f6ead0; --text: #4a2e00; --muted: #8a6424; --border: #dcc08a;
+  --accent: #a86400; --sel-bg: #a86400; --sel-text: #fdf7ea;
+  --head-bg: #2a1a00; --head-text: #ffb000; --foot-bg: #f6ead0; --foot-text: #4a2e00;
+  --add-bg: #eef2c8; --add-num: #dfe7a4; --add-mark: #5d6b00;
+  --del-bg: #fbe0d2; --del-num: #f5c6ae; --del-mark: #b23c0c;
+  --hl-bg: rgba(168, 100, 0, 0.10); --hl-bar: #a86400; --gap-bg: #f3e4c4;
+  --high: #b23c0c; --medium: #a86400; --low: #8a6424;
+  --syn-kw: #a86400; --syn-str: #6b5200; --syn-num: #b23c0c; --syn-com: #a08452; --syn-fn: #4a2e00; --syn-type: #7a4a00;
+  --display: "RV VT323", monospace; --d-lg: 24px; --d-md: 20px; --d-sm: 18px;
+  --shadow: #dcc08a; --glow: transparent; --scan: 0;
+}
+
+/* Turbo, light: the grey dialog boxes of the same IDE, blue title bar. */
+:root[data-theme="turbo"][data-mode="light"] {
+  color-scheme: light;
+  --bg: #e0e0e0; --panel: #c0c0c0; --text: #000; --muted: #000080; --border: #000080;
+  --accent: #0000aa; --sel-bg: #0000aa; --sel-text: #ffff55;
+  --head-bg: #0000aa; --head-text: #fff; --foot-bg: #00aaaa; --foot-text: #000;
+  --add-bg: #b8f0b8; --add-num: #88dd88; --add-mark: #006600;
+  --del-bg: #f4c0c0; --del-num: #e89090; --del-mark: #aa0000;
+  --hl-bg: rgba(0, 0, 170, 0.10); --hl-bar: #0000aa; --gap-bg: #d0d0e8;
+  --high: #aa0000; --medium: #aa5500; --low: #555;
+  --syn-kw: #0000aa; --syn-str: #008080; --syn-num: #aa00aa; --syn-com: #666; --syn-fn: #000; --syn-type: #006600;
+  --display: "RV VT323", monospace; --d-lg: 24px; --d-md: 20px; --d-sm: 18px;
+  --shadow: #000; --glow: transparent; --scan: 0;
+}
+
+/* 1-bit, dark: the same screen in inverse video. */
+:root[data-theme="onebit"][data-mode="dark"] {
+  color-scheme: dark;
+  --bg: #000; --panel: #000; --text: #fff; --muted: #aaa; --border: #fff;
+  --accent: #fff; --sel-bg: #fff; --sel-text: #000;
+  --head-bg: repeating-linear-gradient(#fff 0 1px, #000 1px 3px); --head-text: #fff; --foot-bg: #000; --foot-text: #fff;
+  --add-bg: #1a1a1a; --add-num: radial-gradient(#666 0.8px, transparent 1px) 0 0 / 3px 3px, #000; --add-mark: #fff;
+  --del-bg: #2e2e2e; --del-num: repeating-linear-gradient(135deg, #555 0 1px, transparent 1px 4px), #000; --del-mark: #fff;
+  --hl-bg: rgba(255, 255, 255, 0.10); --hl-bar: #fff; --gap-bg: #141414;
+  --high: #fff; --medium: #fff; --low: #aaa;
+  --syn-kw: #fff; --syn-str: #c8c8c8; --syn-num: #fff; --syn-com: #8a8a8a; --syn-fn: #fff; --syn-type: #fff;
+  --display: "RV Silkscreen", monospace; --d-lg: 18px; --d-md: 12px; --d-sm: 12px;
+  --shadow: #fff; --glow: transparent; --scan: 0;
+}
+
+/* Game Boy, dark: the same four greens with the darkest as the screen. */
+:root[data-theme="gameboy"][data-mode="dark"] {
+  color-scheme: dark;
+  --bg: #0f380f; --panel: #0b2e0b; --text: #9bbc0f; --muted: #8bac0f; --border: #306230;
+  --accent: #9bbc0f; --sel-bg: #9bbc0f; --sel-text: #0f380f;
+  --head-bg: #9bbc0f; --head-text: #0f380f; --foot-bg: #0b2e0b; --foot-text: #9bbc0f;
+  --add-bg: #1f4a1f; --add-num: #306230; --add-mark: #9bbc0f;
+  --del-bg: #082408; --del-num: repeating-linear-gradient(135deg, rgba(155, 188, 15, 0.3) 0 1px, transparent 1px 4px), #0b2e0b; --del-mark: #9bbc0f;
+  --hl-bg: rgba(155, 188, 15, 0.12); --hl-bar: #9bbc0f; --gap-bg: #0b2e0b;
+  --high: #9bbc0f; --medium: #9bbc0f; --low: #8bac0f;
+  --syn-kw: #9bbc0f; --syn-str: #8bac0f; --syn-num: #9bbc0f; --syn-com: #5f8a3a; --syn-fn: #9bbc0f; --syn-type: #9bbc0f;
+  --display: "RV Press Start", monospace; --d-lg: 13px; --d-md: 8px; --d-sm: 9px;
+  --shadow: #000; --glow: transparent; --scan: 0;
+}
+
+/* Solarized light: base3 paper; body text base01 for the same reason the
+ * dark variant uses base1. */
+:root[data-theme="solarized"][data-mode="light"] {
+  color-scheme: light;
+  --bg: #fdf6e3; --panel: #eee8d5; --text: #586e75; --muted: #839496; --border: #d6cfb8;
+  --accent: #268bd2; --sel-bg: #268bd2; --sel-text: #fdf6e3;
+  --head-bg: #eee8d5; --head-text: #586e75; --foot-bg: #eee8d5; --foot-text: #586e75;
+  --add-bg: rgba(133, 153, 0, 0.14); --add-num: rgba(133, 153, 0, 0.26); --add-mark: #859900;
+  --del-bg: rgba(220, 50, 47, 0.12); --del-num: rgba(220, 50, 47, 0.24); --del-mark: #dc322f;
+  --hl-bg: rgba(38, 139, 210, 0.12); --hl-bar: #268bd2; --gap-bg: #f5efdc;
+  --high: #dc322f; --medium: #cb4b16; --low: #93a1a1;
+  --syn-kw: #859900; --syn-str: #2aa198; --syn-num: #d33682; --syn-com: #93a1a1; --syn-fn: #268bd2; --syn-type: #b58900;
+  --display: "RV VT323", monospace; --d-lg: 24px; --d-md: 20px; --d-sm: 18px;
+  --shadow: #d6cfb8; --glow: transparent; --scan: 0;
+}
+
+/* --- shared by every theme -------------------------------------------------- */
+
+:root[data-theme] {
+  --mono: "RV Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --sans: var(--mono);
+}
+:root[data-theme] body { font-size: 13.5px; line-height: 1.55; }
+:root[data-theme] *, :root[data-theme] *::before, :root[data-theme] *::after { border-radius: 0 !important; }
+:root[data-theme] ::selection { background: var(--accent); color: var(--bg); }
+
+/* Scan lines on the CRT themes; 0 elsewhere. Never takes a click. */
+:root[data-theme] body::after {
+  content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 100;
+  background: repeating-linear-gradient(to bottom, rgba(0, 0, 0, var(--scan)) 0 1px, transparent 1px 3px);
+}
+
+/* Header and footer bars. */
+:root[data-theme] .top { background: var(--head-bg); color: var(--head-text); border-bottom: 2px solid var(--border); }
+:root[data-theme] .top .muted, :root[data-theme] .top .theme-pick { color: var(--head-text); opacity: 0.85; }
+:root[data-theme] .composer { background: var(--foot-bg); color: var(--foot-text); border-top: 2px solid var(--border); }
+:root[data-theme] .composer .muted { color: var(--foot-text); opacity: 0.8; }
+
+/* Pixel type for the chrome only; prose and code stay in the mono face. */
+:root[data-theme] .top h1 { font: var(--d-lg)/1 var(--display); letter-spacing: 0.02em; text-shadow: 0 0 6px var(--glow); }
+:root[data-theme] .tabs button { font: var(--d-md)/1.2 var(--display); text-transform: uppercase; white-space: nowrap; padding: 6px 8px; }
+:root[data-theme] .sev-h, :root[data-theme] .side-h, :root[data-theme] .detail .label,
+:root[data-theme] .detail h3, :root[data-theme] .chat-head strong {
+  font: var(--d-sm)/1.3 var(--display); text-transform: uppercase; letter-spacing: 0.04em;
+}
+:root[data-theme] .sev-h { text-shadow: 0 0 5px var(--glow); }
+
+/* Edges: 2px lines, hard block shadows, no soft blur. */
+:root[data-theme] button, :root[data-theme] input[type=text], :root[data-theme] input[type=search],
+:root[data-theme] textarea, :root[data-theme] select { border-width: 2px; }
+:root[data-theme] textarea, :root[data-theme] input { caret-color: var(--accent); }
+:root[data-theme] :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+:root[data-theme] textarea:focus, :root[data-theme] input:focus { outline: 2px solid var(--accent); outline-offset: 0; }
+:root[data-theme] #send, :root[data-theme] .decide .row button, :root[data-theme] .step-nav button,
+:root[data-theme] .float-btn { box-shadow: 3px 3px 0 var(--shadow); }
+:root[data-theme] #send:hover, :root[data-theme] .decide .row button:hover, :root[data-theme] .step-nav button:hover:not(:disabled) {
+  background: var(--sel-bg); color: var(--sel-text); border-color: var(--sel-bg);
+}
+:root[data-theme] #send:active, :root[data-theme] .decide .row button:active { transform: translate(3px, 3px); box-shadow: none; }
+:root[data-theme] .float-btn { background: var(--sel-bg); color: var(--sel-text); border-color: var(--sel-bg); }
+:root[data-theme] .chat { box-shadow: 0 -6px 0 var(--shadow); border-top: 2px solid var(--border); }
+:root[data-theme] .ac { box-shadow: 4px 4px 0 var(--shadow); border-width: 2px; }
+:root[data-theme] .resizer { border-left-width: 2px; }
+
+/* Selection shows as inverse video. */
+:root[data-theme] .tabs { border-bottom: 2px solid var(--border); }
+:root[data-theme] .tabs button.active { background: var(--sel-bg); color: var(--sel-text); border-bottom-color: var(--sel-bg); }
+:root[data-theme] .tabs button.active .muted { color: inherit; opacity: 0.8; }
+:root[data-theme] .files li button.selected { background: var(--sel-bg); color: var(--sel-text); box-shadow: none; }
+:root[data-theme] .ac li.active { background: var(--sel-bg); color: var(--sel-text); box-shadow: none; }
+:root[data-theme] .ac li.active .ac-dir { color: inherit; }
+:root[data-theme] .finding-item { border-width: 2px; }
+:root[data-theme] .finding-item.selected { border-color: var(--accent); box-shadow: 3px 3px 0 var(--accent); }
+/* Room for the block shadow: the right panel clips anything wider. */
+:root[data-theme] .finding-item { width: calc(100% - 4px); }
+:root[data-theme] .step-item.selected { border: 2px solid var(--accent); box-shadow: 3px 3px 0 var(--accent); }
+:root[data-theme] .files li button.selected::before { content: "▸ "; }
+
+/* Scroll bars as flat blocks. */
+:root[data-theme] * { scrollbar-color: var(--border) var(--panel); }
+:root[data-theme] ::-webkit-scrollbar { width: 12px; height: 12px; }
+:root[data-theme] ::-webkit-scrollbar-track { background: var(--panel); }
+:root[data-theme] ::-webkit-scrollbar-thumb { background: var(--border); border: 2px solid var(--panel); }
+:root[data-theme] ::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+
+/* Syntax colours from the theme, over whichever highlight.js sheet loaded. */
+:root[data-theme] .hljs { background: transparent; color: var(--text); }
+:root[data-theme] .hljs-keyword, :root[data-theme] .hljs-built_in, :root[data-theme] .hljs-literal,
+:root[data-theme] .hljs-selector-tag, :root[data-theme] .hljs-meta .hljs-keyword { color: var(--syn-kw); font-weight: 600; }
+:root[data-theme] .hljs-string, :root[data-theme] .hljs-regexp, :root[data-theme] .hljs-meta .hljs-string { color: var(--syn-str); }
+:root[data-theme] .hljs-number, :root[data-theme] .hljs-symbol, :root[data-theme] .hljs-variable.language_ { color: var(--syn-num); }
+:root[data-theme] .hljs-comment, :root[data-theme] .hljs-quote { color: var(--syn-com); font-style: italic; }
+:root[data-theme] .hljs-title, :root[data-theme] .hljs-title.function_, :root[data-theme] .hljs-section { color: var(--syn-fn); font-weight: 600; }
+:root[data-theme] .hljs-type, :root[data-theme] .hljs-title.class_, :root[data-theme] .hljs-attr,
+:root[data-theme] .hljs-attribute, :root[data-theme] .hljs-params, :root[data-theme] .hljs-meta,
+:root[data-theme] .hljs-variable, :root[data-theme] .hljs-property, :root[data-theme] .hljs-name { color: var(--syn-type); }
+
+/* --- per-theme touches ------------------------------------------------------ */
+
+/* DOS: blue panels framed by double lines. */
+:root[data-theme="turbo"] .side, :root[data-theme="turbo"] .detail { background: var(--panel); }
+:root[data-theme="turbo"] .resizer { border-left: 3px double var(--border); }
+:root[data-theme="turbo"] .file-head { border-bottom: 3px double var(--border); color: var(--accent); }
+:root[data-theme="turbo"] .tabs { border-bottom: 3px double var(--border); }
+:root[data-theme="turbo"] .sev-h, :root[data-theme="turbo"] .side-h { color: var(--accent); }
+
+/* 1-bit: the striped title bar, with the title on a white plate. */
+:root[data-theme="onebit"] .top h1 { background: var(--bg); padding: 2px 8px; border: 2px solid var(--border); }
+:root[data-theme="onebit"] .top .muted, :root[data-theme="onebit"] .top .theme-pick,
+:root[data-theme="onebit"] .top .pr-info { background: var(--bg); padding: 0 6px; opacity: 1; }
+:root[data-theme="gameboy"] .top a, :root[data-theme="gameboy"] .top .pr-info a { color: var(--head-text); }
+
+/* 1-bit and Game Boy have no spare colours, so severities differ by fill
+ * and border: HIGH filled, MEDIUM solid, LOW dashed. */
+:root[data-theme="onebit"] .badge.HIGH, :root[data-theme="gameboy"] .badge.HIGH { background: var(--text); color: var(--bg); border-color: var(--text); }
+:root[data-theme="onebit"] .badge.MEDIUM, :root[data-theme="gameboy"] .badge.MEDIUM { border: 2px solid var(--text); color: var(--text); }
+:root[data-theme="onebit"] .badge.LOW, :root[data-theme="gameboy"] .badge.LOW { border: 1px dashed var(--muted); }
+:root[data-theme="onebit"] .sev-h.HIGH, :root[data-theme="gameboy"] .sev-h.HIGH { background: var(--text); color: var(--bg); padding: 2px 6px; display: inline-block; }
+:root[data-theme="onebit"] .dot, :root[data-theme="gameboy"] .dot { background: var(--bg); border: 2px solid var(--text); }
+:root[data-theme="onebit"] .dot.HIGH, :root[data-theme="gameboy"] .dot.HIGH { background: var(--text); }
+:root[data-theme="onebit"] .qbadge.good, :root[data-theme="gameboy"] .qbadge.good { border: 2px solid var(--text); color: var(--text); }
+:root[data-theme="onebit"] .qbadge.note, :root[data-theme="gameboy"] .qbadge.note { border: 1px dashed var(--text); color: var(--text); }
+:root[data-theme="onebit"] .qbadge.concern, :root[data-theme="gameboy"] .qbadge.concern { background: var(--text); color: var(--bg); border-color: var(--text); }
+
+/* The theme menu's list (where the browser lets the page draw it). */
+:root[data-theme] .theme-pick select::picker(select) { border-width: 2px; box-shadow: 3px 3px 0 var(--shadow); }
+:root[data-theme] .theme-pick option:hover, :root[data-theme] .theme-pick option:focus-visible { background: var(--sel-bg); color: var(--sel-text); }

@@ -6,6 +6,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Review viewer</title>
 <script src="/static/boot.js"></script>
+<script src="/static/theme.js"></script>
 <link rel="stylesheet" media="(prefers-color-scheme: light)"
       href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.2/styles/github.min.css"
       integrity="sha512-0aPQyyeZrWj9sCA46UlmWgKOP0mUipLQ6OZXu8l4IcAmD2u31EPEy9VcIMvl7SoAaKe8bLXZhYoMaE/in+gcgA=="
@@ -15,6 +16,7 @@
       integrity="sha512-rO+olRTkcf304DQBxSWxln8JXCzTHlKnIdnMUwYvQa9/Jd4cQaNkItIUj6Z4nvW1dqK0SKXLbn9h4KwZTNtAyw=="
       crossorigin="anonymous">
 <link rel="stylesheet" href="/static/app.css">
+<link rel="stylesheet" href="/static/themes.css">
 <script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.11.2/highlight.min.js"
         integrity="sha512-VSPLUv/n1Bmn+4zoxBNwpuFAO3//79I0Aax/qHDx24R47vylPcc9PrHDCqlePwHnh3joiM7/YTQhcXyQAAxvPQ=="
         crossorigin="anonymous"></script>
@@ -34,15 +36,15 @@
 <header class="top">
   <h1 id="title">Review viewer</h1>
   <span id="pr-info" class="pr-info" hidden></span>
+  <select id="target-select" class="target-select" hidden aria-label="Review target"></select>
   <span id="who" class="muted"></span>
+  <label class="theme-pick muted">Theme <select id="theme-select" aria-label="Colour theme"></select></label>
+  <button id="mode-btn" class="mode-btn" type="button" aria-label="Light or dark mode">◐ Auto</button>
 </header>
 <div id="banner" class="banner" hidden></div>
 <div id="notice" class="banner notice" hidden></div>
 <main class="layout">
-  <nav id="side" class="side" aria-label="Findings and files">
-    <select id="target-select" hidden aria-label="Review target"></select>
-    <label class="toggle"><input type="checkbox" id="show-hidden"> <span id="hidden-label">Show refuted and rejected</span></label>
-    <div id="findings"></div>
+  <nav id="side" class="side" aria-label="Changed files">
     <h2 class="side-h">Changed files</h2>
     <input id="file-search" type="search" placeholder="Filter files ( / )" aria-label="Filter files">
     <ul id="files" class="files"></ul>
@@ -58,7 +60,10 @@
     <div id="code" class="code" tabindex="0"></div>
     <button id="ask-lines" class="float-btn" hidden>Ask about these lines</button>
   </section>
-  <aside class="detail" aria-label="Summary, reviews and findings">
+  <div id="detail-resize" class="resizer" role="separator" aria-orientation="vertical"
+       aria-controls="detail" aria-label="Resize the right panel (arrow keys; double-click resets)"
+       aria-valuemin="240" tabindex="0" title="Drag to resize; double-click to reset"></div>
+  <aside id="detail" class="detail" aria-label="Summary, reviews and findings">
     <div class="tabs" role="tablist">
       <button id="tab-summary" role="tab" aria-controls="summary">Summary</button>
       <button id="tab-walk" role="tab" aria-controls="walkthrough">Reviews <span id="walk-count" class="muted"></span></button>
@@ -78,7 +83,11 @@
       <ol id="walk-steps" class="walk-steps"></ol>
       <div id="walk-step" class="walk-step"></div>
     </div>
-    <div id="finding" role="tabpanel" hidden></div>
+    <div id="finding" role="tabpanel" hidden>
+      <label class="toggle"><input type="checkbox" id="show-hidden"> <span id="hidden-label">Show refuted and rejected</span></label>
+      <div id="findings" class="finding-list"></div>
+      <div id="finding-detail" class="finding-detail"></div>
+    </div>
     <section id="decide" class="decide" hidden>
       <h3>Decision <span id="decision-now" class="muted"></span></h3>
       <input id="decision-note" type="text" placeholder="Note (optional)" aria-label="Decision note">

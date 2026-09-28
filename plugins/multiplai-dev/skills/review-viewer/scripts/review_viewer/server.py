@@ -50,7 +50,7 @@ STOP_MESSAGES = {
 }
 
 CSP = ("default-src 'none'; script-src 'self' https://cdnjs.cloudflare.com; "
-       "style-src 'self' https://cdnjs.cloudflare.com; img-src 'self' data:; "
+       "style-src 'self' https://cdnjs.cloudflare.com; img-src 'self' data:; font-src 'self'; "
        "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 
 

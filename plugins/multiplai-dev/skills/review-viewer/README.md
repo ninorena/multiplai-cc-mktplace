@@ -42,6 +42,15 @@ The walkthrough fills in while the session writes it: first the overview and
 the first steps, then the rest. Click a step's file reference to jump the
 code there; `]` and `[` move between steps, `j` and `k` between findings.
 
+The **Theme** menu in the header changes colours and type without moving
+anything: Default; Phosphor and Amber are CRT terminals; Turbo is a DOS
+text-mode IDE; 1-bit is black and white; Game Boy uses the handheld's four
+greens; Solarized is Ethan Schoonover's palette. The button next to it
+cycles **Auto → Light → Dark**: every theme has a light and a dark version,
+and Auto follows the system setting, changing when it does. Both choices are kept per
+browser. The fonts ship with the viewer (`static/FONTS-LICENSE.txt`, all
+SIL Open Font License), so themes load nothing from the network.
+
 ## The parts
 
 ```
@@ -121,7 +130,7 @@ the same browser: a request from another web origin gets 403, and every
 server never says yes.
 
 The page also runs under a content security policy: scripts only from the
-server and cdnjs, no inline scripts or styles. Diagrams are drawn by mermaid,
+server and cdnjs, fonts only from the server, no inline scripts or styles. Diagrams are drawn by mermaid,
 cleaned with DOMPurify and shown as images, so a diagram cannot run code.
 
 ## Stopping

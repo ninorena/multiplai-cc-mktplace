@@ -17,6 +17,34 @@ time, not derived from a tag.
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-09-27
+
+### Added
+
+- **`review-viewer` has six themes, each light and dark**, picked from a Theme menu in the page
+  header: Phosphor (green CRT), Amber (amber CRT), Turbo (DOS text-mode IDE),
+  1-bit (black and white), Game Boy (four greens) and Solarized. They change
+  colours, fonts and edges, not the layout; Default is the previous look.
+  A button beside the menu cycles Auto, Light and Dark: every theme has a
+  light and a dark version, and Auto follows the system setting as it
+  changes. Both choices are remembered per browser. Pixel fonts are used for headings and tabs;
+  code and prose use IBM Plex Mono. All fonts ship with the viewer, and the
+  page's content security policy now allows fonts from the viewer itself.
+
+### Changed
+
+- **`review-viewer`: the left column lists only the changed files.** The
+  findings list moved into the Findings tab, above the finding it opens, with
+  the "Show refuted and rejected" switch. The review picker (shown when the
+  viewer has more than one review) moved to the page header.
+- **`review-viewer`: the right column can be resized** by dragging its left
+  edge, like the left column; the code in the middle takes what is left. The
+  width is remembered, and a double-click on the edge resets it.
+- **`review-viewer`: the line above the chat box says what a message will be
+  about.** "Linked to review: …" now reads "Asking about the open review: …"
+  (or "…the open finding: …"): a message sent without an `@` reference
+  reaches the session together with the review or finding open on the right.
+
 ## [0.19.0] - 2026-09-26
 
 ### Added
