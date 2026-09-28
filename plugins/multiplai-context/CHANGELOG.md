@@ -16,6 +16,23 @@ are the release dates recorded at the time, not derived from a tag.
 
 ## [Unreleased]
 
+## [0.55.2] - 2026-09-28
+
+### Changed
+
+- **A hook about to be killed now logs what it was doing.** 0.55.1 shipped
+  the watchdog but left it off, because the multiplai-core it installed
+  (0.13.0) could not run it. This release moves to multiplai-core 0.15.0. At
+  26s into the per-prompt hook, `context_manager.log` now gets a
+  `HOOK_WATCHDOG` line with the stage still running, and a
+  `HOOK_WATCHDOG_DETAIL` line with a timed DNS lookup and TCP connect to the
+  API host and the last lines of the CLI's debug log. Each model call's CLI
+  debug output is also written to `<logs_dir>/sdk/` as it arrives. Fast
+  successful calls delete their file; failed, timed-out and slow calls keep
+  it.
+- multiplai-core 0.15.0 also brings `anthropic` 1.x (from 0.120) and stops
+  sending `temperature` on direct Messages API calls.
+
 ## [0.55.1] - 2026-09-27
 
 ### Fixed
