@@ -279,8 +279,8 @@ uv run --directory ${CLAUDE_PLUGIN_ROOT}/skills/review-viewer/scripts \
 ```
 
 `stop --all` stops every viewer whose mailbox this user can read. The server
-also stops by itself 30 minutes after the last page is closed (`serve --idle
-<minutes>`, `0` = never).
+runs until `stop` or until its container ends. `serve --idle <minutes>` makes
+it stop by itself that long after the last page is closed.
 
 ### 8. When something is missing
 

@@ -156,12 +156,6 @@ test("coverage counts anchored or skipped files and linked findings", () => {
   assert.deepEqual(L.walkCoverage(null, ["a"], []), { files: 0, filesTotal: 1, findings: 0, findingsTotal: 0 });
 });
 
-test("walkthrough status text", () => {
-  assert.equal(L.walkStatus(null), "Waiting for the walkthrough");
-  assert.equal(L.walkStatus(WALK), "Walkthrough in progress");
-  assert.equal(L.walkStatus({ complete: true, steps: [] }), "");
-});
-
 test("anchors map to rows by new or old line number", () => {
   const rows = [
     { k: "ctx", o: null, n: 1 }, { k: "del", o: 3, n: null }, { k: "del", o: 4, n: null },
@@ -255,29 +249,14 @@ test("files move in sidebar order, filtered, stopping at both ends", () => {
   assert.equal(L.neighbourFile(order, "gone.md", 1), null);
 });
 
-test("overscroll moves only on a fresh push past the edge", () => {
-  const opts = { pauseMs: 200, need: 300 };
-  // A fling reaches the bottom: its momentum events (16 ms apart) never count.
-  let r = L.overscroll(null, 0, 100, 0, opts);
-  for (let t = 16; t < 600; t += 16) {
-    r = L.overscroll(r.acc, 1, 50, t, opts);
-    assert.equal(r.move, false);
-  }
-  // A pause, then a deliberate push: counts, and moves once 300 px add up.
-  r = L.overscroll(r.acc, 1, 120, 1000, opts);
-  assert.equal(r.move, false);
-  assert.ok(r.progress > 0);
-  r = L.overscroll(r.acc, 1, 120, 1016, opts);
-  assert.equal(r.move, false);
-  r = L.overscroll(r.acc, 1, 120, 1032, opts);
-  assert.equal(r.move, true);
-  // Leaving the edge, or pushing the other way, resets.
-  r = L.overscroll(null, 1, 200, 5000, opts);
-  r = L.overscroll(r.acc, 0, 200, 5016, opts);
-  assert.equal(r.acc.total, 0);
-  r = L.overscroll(r.acc, -1, 200, 6000, opts);
-  assert.equal(r.move, false);
-  assert.equal(L.overscroll(r.acc, -1, -200, 6016, opts).move, false);
+test("Prev / Next follow the open review step when it spans several files", () => {
+  const files = ["a.py", "b.py", "c.py", "d.py"];
+  const step = { anchors: [{ path: "c.py" }, { path: "a.py" }, { path: "c.py" }, { path: "gone.py" }] };
+  assert.deepEqual(L.navFiles(step, files, "", "a.py"), { order: ["c.py", "a.py"], inStep: true });
+  // A file outside the step, or a one-file step: every changed file.
+  assert.equal(L.navFiles(step, files, "", "b.py").inStep, false);
+  assert.equal(L.navFiles({ anchors: [{ path: "a.py" }] }, files, "", "a.py").inStep, false);
+  assert.deepEqual(L.navFiles(null, files, "", "a.py").order, files);
 });
 
 test("a file's reviews: steps anchoring it, in order, with the matching anchor", () => {
@@ -418,6 +397,91 @@ test("adding a reference never repeats one; overlapping ones merge", () => {
     "@a.py:12 @a.py:base:12 ");
   assert.equal(L.mergeRef("@a.py:1", files, "a.py", { side: "head", line_start: 5, line_end: 6 }, 0).text,
     "@a.py:5-6 @a.py:1");
+});
+
+test("reply threads keep the latest part's timestamp", () => {
+  const t = L.groupReplies([{ reply_to: "q", text: "a", done: false, ts: "2026-01-01T10:00:00Z" },
+    { reply_to: "q", text: "b", done: true, ts: "2026-01-01T10:01:00Z" }]);
+  assert.equal(t.get("q").ts, "2026-01-01T10:01:00Z");
+});
+
+test("wordDiff marks the changed words of a changed line", () => {
+  const d = L.wordDiff("const x = foo(a, b);", "const x = bar(a, c);");
+  assert.deepEqual(d.del, [[10, 13], [17, 18]]);
+  assert.deepEqual(d.add, [[10, 13], [17, 18]]);
+  // Changed words with only a space between them become one mark.
+  assert.deepEqual(L.wordDiff("return old value;", "return new thing;").add, [[7, 16]]);
+  // A line rewritten from scratch gets no marks: the whole line is the change.
+  assert.equal(L.wordDiff("alpha beta gamma", "one two three"), null);
+  assert.equal(L.wordDiff("a ".repeat(400), "b ".repeat(400)), null);
+});
+
+test("changePairs pairs the i-th deleted row with the i-th added row", () => {
+  const rows = [{ k: "ctx" }, { k: "del" }, { k: "del" }, { k: "add" }, { k: "ctx" }, { k: "add" }];
+  const p = L.changePairs(rows);
+  assert.equal(p.get(1), 3);
+  assert.equal(p.get(3), 1);
+  assert.equal(p.has(2), false);
+  assert.equal(p.has(5), false);
+});
+
+test("markRanges wraps text offsets without breaking the highlighter's tags", () => {
+  const html = '<span class="k">const</span> x &lt; y';
+  assert.equal(L.markRanges(html, [[4, 9]], "wd"),
+    '<span class="k">cons<mark class="wd">t</mark></span><mark class="wd"> x &lt;</mark> y');
+  assert.equal(L.markRanges(html, [], "wd"), html);
+});
+
+test("splitLines pairs deletions left with additions right", () => {
+  const rows = [{ k: "ctx" }, { k: "del" }, { k: "del" }, { k: "add" }, { k: "ctx" }, { k: "gap" }, { k: "add" }];
+  const items = rows.map((_, i) => ({ row: i }));
+  items.splice(4, 1, { fold: [4, 4] });
+  assert.deepEqual(L.splitLines(rows, items), [
+    { left: 0, right: 0 }, { left: 1, right: 3 }, { left: 2, right: null },
+    { fold: [4, 4] }, { gap: 5 }, { left: null, right: 6 },
+  ]);
+});
+
+test("oldNumbers fills base line numbers on unchanged rows", () => {
+  const rows = [{ k: "ctx", n: 1 }, { k: "add", n: 2 }, { k: "ctx", n: 3 }, { k: "del", o: 3 },
+    { k: "del", o: 4 }, { k: "ctx", n: 4 }, { k: "gap", t: "…" }, { k: "ctx", n: 40 }];
+  assert.deepEqual(L.oldNumbers(rows), [1, null, 2, 3, 4, 5, null, null]);
+});
+
+test("enclosingScope finds the nearest opening line above", () => {
+  const rows = [{ k: "ctx", t: "class A:" }, { k: "ctx", t: "    def run(self):" },
+    { k: "ctx", t: "        x = 1" }, { k: "del", t: "def gone():" }, { k: "add", t: "        y = 2" }];
+  assert.equal(L.enclosingScope(rows, 4), "def run(self):");
+  assert.equal(L.enclosingScope(rows, 0), "class A:");
+  assert.equal(L.enclosingScope([{ k: "ctx", t: "const go = async () => {" }], 0), "const go = async () => {");
+  assert.equal(L.enclosingScope([{ k: "ctx", t: "x = 1" }], 0), null);
+});
+
+test("stepBlock moves between blocks of changes", () => {
+  const starts = [5, 20, 40];
+  assert.equal(L.stepBlock(starts, 0, 1), 0);
+  assert.equal(L.stepBlock(starts, 5, 1), 1);
+  assert.equal(L.stepBlock(starts, 25, 1), 2);
+  assert.equal(L.stepBlock(starts, 40, 1), -1);
+  assert.equal(L.stepBlock(starts, 25, -1), 1);
+  assert.equal(L.stepBlock(starts, 20, -1), 0);
+  assert.equal(L.stepBlock(starts, 3, -1), -1);
+  assert.equal(L.stepBlock([], 3, 1), -1);
+});
+
+test("paletteMatch ranks prefix, then substring, then scattered letters", () => {
+  const e = [{ label: "server.py", sub: "review_viewer" }, { label: "observer.js", sub: "static" },
+    { label: "setup_rv.sh", sub: "scripts" }, { label: "app.js", sub: "static/server" }];
+  assert.deepEqual(L.paletteMatch(e, "serv").map((x) => x.label), ["server.py", "observer.js", "setup_rv.sh", "app.js"]);
+  // Scattered letters: the tighter span ranks first.
+  assert.deepEqual(L.paletteMatch(e, "srv").map((x) => x.label).slice(0, 3), ["server.py", "observer.js", "setup_rv.sh"]);
+  assert.equal(L.paletteMatch(e, "").length, 4);
+  assert.deepEqual(L.paletteMatch(e, "zzz"), []);
+});
+
+test("viewedCount counts only files in the change", () => {
+  assert.deepEqual(L.viewedCount(["a", "b", "c"], { a: "t", gone: "t" }), { done: 1, total: 3 });
+  assert.deepEqual(L.viewedCount(["a"], null), { done: 0, total: 1 });
 });
 
 let failed = 0;

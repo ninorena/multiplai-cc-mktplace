@@ -37,6 +37,7 @@
       t.parts.push(String(row.text == null ? "" : row.text));
       t.text = joinParts(t.parts);
       t.done = row.done === true;
+      if (typeof row.ts === "string") t.ts = row.ts;
     }
     return threads;
   }
@@ -81,11 +82,11 @@
 
   function isHidden(finding, decisions) {
     const d = decisions && decisions[finding.id];
-    return HIDDEN_STATUSES.has(finding.status) || (d && d.decision === "reject");
+    return HIDDEN_STATUSES.has(finding.status) || !!(d && d.decision === "reject");
   }
 
-  /* Findings by severity, in the input order within each severity. Refuted,
-   * rejected, and findings the user rejected are left out unless showHidden. */
+  /* Findings by severity, in the input order within each severity. Refuted
+   * and rejected findings are left out unless showHidden. */
   function groupFindings(findings, decisions, showHidden) {
     const groups = { HIGH: [], MEDIUM: [], LOW: [] };
     let hidden = 0;
@@ -193,13 +194,6 @@
     };
   }
 
-  /* What the walkthrough tab says about its state. */
-  function walkStatus(walk) {
-    if (!walk) return "Waiting for the walkthrough";
-    if (!walk.complete) return "Walkthrough in progress";
-    return "";
-  }
-
   /* Indices of the file-view rows an anchor covers: head-side anchors match
    * the new line number, base-side ones the old line number. */
   function anchorRows(rows, anchor) {
@@ -304,7 +298,7 @@
   }
 
   /* The changed files in the order the sidebar lists them (grouped by
-   * directory, filtered), which is the order scrolling moves through. */
+   * directory, filtered): the order Prev / Next move through. */
   function fileOrder(files, filter) {
     const f = (filter || "").toLowerCase();
     const shown = (files || []).filter(function (p) { return !f || p.toLowerCase().includes(f); });
@@ -319,26 +313,6 @@
     if (i < 0) return null;
     const j = i + delta;
     return j >= 0 && j < order.length ? order[j] : null;
-  }
-
-  /* Scrolling past the top or bottom of a file moves to the previous or next
-   * file, but only on a fresh push: wheel events that arrive while the pane is
-   * already at its edge count only after a pause of `pauseMs`, so the momentum
-   * of a fling that reached the edge never turns the page. Returns the new
-   * accumulator and whether to move. `edge` is -1 (top), 1 (bottom) or 0. */
-  function overscroll(acc, edge, delta, now, opts) {
-    const o = opts || {};
-    const pauseMs = o.pauseMs == null ? 200 : o.pauseMs;
-    const need = o.need == null ? 300 : o.need;
-    const dir = delta > 0 ? 1 : delta < 0 ? -1 : 0;
-    const last = acc ? acc.last : -Infinity;
-    if (!dir || edge !== dir) return { move: false, acc: { armed: false, total: 0, dir: 0, last: now } };
-    let armed = acc && acc.armed && acc.dir === dir;
-    let total = armed ? acc.total : 0;
-    if (!armed && now - last >= pauseMs) armed = true;
-    if (armed) total += Math.abs(delta);
-    if (armed && total >= need) return { move: true, acc: { armed: false, total: 0, dir: 0, last: now } };
-    return { move: false, acc: { armed: armed, total: total, dir: dir, last: now }, progress: armed ? total / need : 0 };
   }
 
   /* Steps with an anchor on `path`, in walkthrough order, each with the
@@ -356,6 +330,21 @@
   function skippedReason(walk, path) {
     const k = ((walk && walk.skipped) || []).find(function (x) { return x.path === path; });
     return k ? k.reason : null;
+  }
+
+  /* Where Prev / Next go from `current`: through the open review step's
+   * files, in the order its anchors name them, when it spans more than one
+   * file and `current` is one of them; otherwise through every changed file
+   * as the sidebar lists them. */
+  function navFiles(step, files, filter, current) {
+    if (step) {
+      const seen = [];
+      for (const a of step.anchors || []) {
+        if ((files || []).includes(a.path) && !seen.includes(a.path)) seen.push(a.path);
+      }
+      if (seen.length > 1 && seen.includes(current)) return { order: seen, inStep: true };
+    }
+    return { order: fileOrder(files, filter), inStep: false };
   }
 
   /* The files a step's anchors point at. */
@@ -567,6 +556,239 @@
     return scored.slice(0, limit || 8).map(function (x) { return x[1]; });
   }
 
+  // --- word-level changes ----------------------------------------------------------
+
+  /* Words, runs of spaces, and single punctuation marks. */
+  function tokens(text) {
+    return String(text).match(/[A-Za-z0-9_]+|\s+|[^A-Za-z0-9_\s]/g) || [];
+  }
+
+  /* Which characters differ between a deleted line and the added line that
+   * replaces it: {del: [[start, end]], add: [[start, end]]}, ends exclusive,
+   * found by a longest-common-subsequence over tokens. Null when the lines
+   * share too little for the marks to help (the whole line changed), or are
+   * too long to compare cheaply. */
+  function wordDiff(a, b, opts) {
+    const o = opts || {};
+    const maxTokens = o.maxTokens || 300;
+    const minShared = o.minShared == null ? 0.4 : o.minShared;
+    const x = tokens(a);
+    const y = tokens(b);
+    if (x.length > maxTokens || y.length > maxTokens) return null;
+    const n = x.length;
+    const m = y.length;
+    const dp = [];
+    for (let i = 0; i <= n; i++) dp.push(new Array(m + 1).fill(0));
+    for (let i = n - 1; i >= 0; i--) {
+      for (let j = m - 1; j >= 0; j--) {
+        dp[i][j] = x[i] === y[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+      }
+    }
+    const keepX = new Array(n).fill(false);
+    const keepY = new Array(m).fill(false);
+    let i = 0;
+    let j = 0;
+    while (i < n && j < m) {
+      if (x[i] === y[j]) { keepX[i] = true; keepY[j] = true; i++; j++; }
+      else if (dp[i + 1][j] >= dp[i][j + 1]) i++;
+      else j++;
+    }
+    const sharedChars = x.reduce(function (acc, t, k) { return acc + (keepX[k] ? t.length : 0); }, 0);
+    const longest = Math.max(String(a).length, String(b).length);
+    if (!longest || sharedChars / longest < minShared) return null;
+    // Changed tokens as character ranges; two changes with only spaces
+    // between them become one mark.
+    const ranges = function (toks, keep) {
+      const out = [];
+      const text = toks.join("");
+      let pos = 0;
+      toks.forEach(function (t, k) {
+        const start = pos;
+        pos += t.length;
+        if (keep[k] || /^\s+$/.test(t)) return;
+        const last = out[out.length - 1];
+        const between = last ? text.slice(last[1], start) : null;
+        if (last && /^\s*$/.test(between)) last[1] = pos;
+        else out.push([start, pos]);
+      });
+      return out;
+    };
+    return { del: ranges(x, keepX), add: ranges(y, keepY) };
+  }
+
+  /* In each block of changed rows, the i-th deleted row paired with the i-th
+   * added row: Map(rowIndex -> partner rowIndex), both directions. */
+  function changePairs(rows) {
+    const out = new Map();
+    let i = 0;
+    const n = (rows || []).length;
+    while (i < n) {
+      const k = rows[i].k;
+      if (k !== "add" && k !== "del") { i++; continue; }
+      const dels = [];
+      const adds = [];
+      while (i < n && (rows[i].k === "add" || rows[i].k === "del")) {
+        (rows[i].k === "del" ? dels : adds).push(i);
+        i++;
+      }
+      for (let p = 0; p < Math.min(dels.length, adds.length); p++) {
+        out.set(dels[p], adds[p]);
+        out.set(adds[p], dels[p]);
+      }
+    }
+    return out;
+  }
+
+  /* Wrap the characters in `ranges` (text offsets, ends exclusive) of
+   * highlighter HTML in <mark class="cls">, closing and reopening the mark
+   * around the highlighter's own tags so the result stays well nested.
+   * An entity such as &lt; counts as one character. */
+  function markRanges(html, ranges, cls) {
+    if (!ranges || !ranges.length) return html;
+    const inRange = function (pos) {
+      return ranges.some(function (r) { return pos >= r[0] && pos < r[1]; });
+    };
+    const open = '<mark class="' + cls + '">';
+    let out = "";
+    let pos = 0;
+    let marking = false;
+    const re = /(<[^>]+>)|(&[#A-Za-z0-9]+;)|([^<&])/g;
+    for (const m of String(html).matchAll(re)) {
+      if (m[1]) {
+        if (marking) { out += "</mark>"; marking = false; }
+        out += m[1];
+        continue;
+      }
+      const want = inRange(pos);
+      if (want && !marking) { out += open; marking = true; }
+      else if (!want && marking) { out += "</mark>"; marking = false; }
+      out += m[2] || m[3];
+      pos += 1;
+    }
+    if (marking) out += "</mark>";
+    return out;
+  }
+
+  /* Side-by-side lines from foldRows items: an unchanged row fills both
+   * sides; in a block of changes the deleted rows go left and the added rows
+   * right, paired in order; folds and server gaps span both.
+   * [{left, right}] (row indices or null), [{fold}], [{gap}]. */
+  function splitLines(rows, items) {
+    const out = [];
+    let dels = [];
+    let adds = [];
+    const flush = function () {
+      for (let p = 0; p < Math.max(dels.length, adds.length); p++) {
+        out.push({ left: p < dels.length ? dels[p] : null, right: p < adds.length ? adds[p] : null });
+      }
+      dels = [];
+      adds = [];
+    };
+    for (const it of items || []) {
+      if (it.fold) { flush(); out.push({ fold: it.fold }); continue; }
+      const r = rows[it.row];
+      if (r.k === "del") { if (adds.length) flush(); dels.push(it.row); }
+      else if (r.k === "add") adds.push(it.row);
+      else { flush(); out.push(r.k === "gap" ? { gap: it.row } : { left: it.row, right: it.row }); }
+    }
+    flush();
+    return out;
+  }
+
+  /* Base-side line numbers for every row: the server gives them only on
+   * deleted rows, and an unchanged row's is its head number minus the lines
+   * added and plus the lines deleted above it. A gap resets the count from
+   * the next row that carries both numbers. Returns an array like rows. */
+  function oldNumbers(rows) {
+    let delta = 0;
+    let known = true;
+    return (rows || []).map(function (r) {
+      if (r.k === "gap") { known = false; return null; }
+      if (r.o != null) {
+        if (r.n != null) { delta = r.n - r.o; known = true; }
+        if (r.k === "del") delta -= 1;
+        return r.o;
+      }
+      if (r.k === "add") { delta += 1; return null; }
+      return known && r.n != null ? r.n - delta : null;
+    });
+  }
+
+  /* The nearest line at or above row `ri` that opens a function, class or
+   * similar scope, trimmed, for the code pane's header; null if none. */
+  const SCOPE_RE = new RegExp("^\\s*(?:export\\s+)?(?:default\\s+)?(?:pub(?:\\([^)]*\\))?\\s+)?" +
+    "(?:async\\s+)?(?:(?:def|class|function|func|fn|impl|interface|struct|enum|trait|module)\\b|" +
+    "(?:const|let|var)\\s+[A-Za-z_$][\\w$]*\\s*=\\s*(?:async\\s*)?(?:function\\b|\\([^)]*\\)\\s*=>))");
+  function enclosingScope(rows, ri) {
+    for (let i = Math.min(ri, (rows || []).length - 1); i >= 0; i--) {
+      const r = rows[i];
+      if (r.k === "gap" || r.k === "del") continue;
+      if (SCOPE_RE.test(r.t)) {
+        const t = r.t.trim();
+        return t.length > 80 ? t.slice(0, 79) + "…" : t;
+      }
+    }
+    return null;
+  }
+
+  /* The index in `starts` (sorted row indices of block starts) of the block
+   * `delta` away from the one containing row `ri`; -1 when there is none. */
+  function stepBlock(starts, ri, delta) {
+    if (!starts.length) return -1;
+    let cur = -1;
+    for (let i = 0; i < starts.length; i++) if (starts[i] <= ri) cur = i;
+    const next = delta > 0 ? (ri < starts[0] ? 0 : cur + 1) : (cur < 0 ? -1 : (starts[cur] < ri ? cur : cur - 1));
+    return next >= 0 && next < starts.length ? next : -1;
+  }
+
+  // --- the Go to palette -------------------------------------------------------------
+
+  /* Entries whose text matches `query` as a subsequence, best first:
+   * a match at the start of the label, then one in the label, then one in
+   * its sub-line; tighter matches rank higher. An empty query keeps the
+   * input order. */
+  function paletteMatch(entries, query, limit) {
+    const q = (query || "").trim().toLowerCase();
+    const max = limit || 50;
+    if (!q) return (entries || []).slice(0, max);
+    const span = function (text) {
+      const t = text.toLowerCase();
+      let first = -1;
+      let j = 0;
+      for (let i = 0; i < t.length && j < q.length; i++) {
+        if (t[i] === q[j]) { if (first < 0) first = i; j++; if (j === q.length) return { first: first, len: i - first + 1 }; }
+      }
+      return null;
+    };
+    const scored = [];
+    (entries || []).forEach(function (e, idx) {
+      const label = String(e.label || "");
+      const sub = String(e.sub || "");
+      const lower = label.toLowerCase();
+      let score = null;
+      if (lower.startsWith(q)) score = 0;
+      else if (lower.includes(q)) score = 10 + lower.indexOf(q) / 100;
+      else {
+        const a = span(label);
+        if (a) score = 20 + (a.len - q.length) + a.first / 100;
+        else {
+          const b = span(label + " " + sub);
+          if (b) score = 200 + (b.len - q.length);
+        }
+      }
+      if (score != null) scored.push([score, idx, e]);
+    });
+    scored.sort(function (x, y) { return x[0] - y[0] || x[1] - y[1]; });
+    return scored.slice(0, max).map(function (x) { return x[2]; });
+  }
+
+  /* "3 of 12 viewed", counting only files still in the change. */
+  function viewedCount(files, viewed) {
+    const v = viewed || {};
+    return { done: (files || []).filter(function (f) { return Object.prototype.hasOwnProperty.call(v, f); }).length,
+      total: (files || []).length };
+  }
+
   /* Only GitHub PR links get an <a> in the header. */
   function safePrUrl(url) {
     return typeof url === "string" && /^https:\/\/github\.com\/[^\s"'<>]+$/.test(url) ? url : null;
@@ -579,18 +801,21 @@
     stepFinding: stepFinding, anchorLabel: anchorLabel, escapeHtml: escapeHtml,
     splitHighlighted: splitHighlighted, lineRange: lineRange,
     stepOrder: stepOrder, moveStep: moveStep, stepPosition: stepPosition,
-    walkCoverage: walkCoverage, walkStatus: walkStatus, anchorRows: anchorRows,
+    walkCoverage: walkCoverage, anchorRows: anchorRows,
     walkAnchorLabel: walkAnchorLabel, stepsForFinding: stepsForFinding,
     svgDataUrl: svgDataUrl, safePrUrl: safePrUrl,
     groupFilesByDir: groupFilesByDir, shortDir: shortDir, clampWidth: clampWidth,
     foldRows: foldRows, expandFold: expandFold, fileOrder: fileOrder,
-    neighbourFile: neighbourFile, overscroll: overscroll,
+    neighbourFile: neighbourFile, navFiles: navFiles,
     stepsForFile: stepsForFile, skippedReason: skippedReason, stepFiles: stepFiles,
     summaryBadges: summaryBadges,
     diffBlock: diffBlock, formatRef: formatRef, parseRefs: parseRefs, refAnchor: refAnchor,
     completion: completion, matchFiles: matchFiles,
     blockStarts: blockStarts, blockKey: blockKey, explainByBlock: explainByBlock,
     chatQuestions: chatQuestions, chatStatus: chatStatus, refSpans: refSpans, mergeRef: mergeRef,
+    tokens: tokens, wordDiff: wordDiff, changePairs: changePairs, markRanges: markRanges,
+    splitLines: splitLines, oldNumbers: oldNumbers, enclosingScope: enclosingScope, stepBlock: stepBlock,
+    paletteMatch: paletteMatch, viewedCount: viewedCount,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.ReviewLogic = api;

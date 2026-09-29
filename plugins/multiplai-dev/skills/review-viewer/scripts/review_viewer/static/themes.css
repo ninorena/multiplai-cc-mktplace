@@ -211,6 +211,12 @@
 :root[data-theme] {
   --mono: "RV Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --sans: var(--mono);
+  /* Derived from each palette, so no theme has to name them. */
+  --on-accent: var(--sel-text);
+  --add-word: color-mix(in srgb, var(--add-mark) 35%, transparent);
+  --del-word: color-mix(in srgb, var(--del-mark) 35%, transparent);
+  --skel: color-mix(in srgb, var(--text) 9%, transparent);
+  --overlay-shadow: 6px 6px 0 var(--shadow);
 }
 :root[data-theme] body { font-size: 13.5px; line-height: 1.55; }
 :root[data-theme] *, :root[data-theme] *::before, :root[data-theme] *::after { border-radius: 0 !important; }
@@ -226,7 +232,7 @@
 :root[data-theme] .top { background: var(--head-bg); color: var(--head-text); border-bottom: 2px solid var(--border); }
 :root[data-theme] .top .muted, :root[data-theme] .top .theme-pick { color: var(--head-text); opacity: 0.85; }
 :root[data-theme] .composer { background: var(--foot-bg); color: var(--foot-text); border-top: 2px solid var(--border); }
-:root[data-theme] .composer .muted { color: var(--foot-text); opacity: 0.8; }
+:root[data-theme] .composer-head .muted { color: var(--foot-text); opacity: 0.8; }
 
 /* Pixel type for the chrome only; prose and code stay in the mono face. */
 :root[data-theme] .top h1 { font: var(--d-lg)/1 var(--display); letter-spacing: 0.02em; text-shadow: 0 0 6px var(--glow); }
@@ -243,14 +249,16 @@
 :root[data-theme] textarea, :root[data-theme] input { caret-color: var(--accent); }
 :root[data-theme] :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 :root[data-theme] textarea:focus, :root[data-theme] input:focus { outline: 2px solid var(--accent); outline-offset: 0; }
-:root[data-theme] #send, :root[data-theme] .decide .row button, :root[data-theme] .step-nav button,
+:root[data-theme] #send, :root[data-theme] .step-nav button,
 :root[data-theme] .float-btn { box-shadow: 3px 3px 0 var(--shadow); }
-:root[data-theme] #send:hover, :root[data-theme] .decide .row button:hover, :root[data-theme] .step-nav button:hover:not(:disabled) {
+:root[data-theme] #send:hover, :root[data-theme] .step-nav button:hover:not(:disabled) {
   background: var(--sel-bg); color: var(--sel-text); border-color: var(--sel-bg);
 }
-:root[data-theme] #send:active, :root[data-theme] .decide .row button:active { transform: translate(3px, 3px); box-shadow: none; }
+:root[data-theme] #send:active { transform: translate(3px, 3px); box-shadow: none; }
 :root[data-theme] .float-btn { background: var(--sel-bg); color: var(--sel-text); border-color: var(--sel-bg); }
-:root[data-theme] .chat { box-shadow: 0 -6px 0 var(--shadow); border-top: 2px solid var(--border); }
+:root[data-theme] .composer { box-shadow: 0 -6px 0 var(--shadow); }
+:root[data-theme] .chat { background: var(--panel); color: var(--text); }
+:root[data-theme] .chat-fab, :root[data-theme] .fab-note { border-radius: 0; box-shadow: 4px 4px 0 var(--shadow); border: 2px solid var(--border); }
 :root[data-theme] .ac { box-shadow: 4px 4px 0 var(--shadow); border-width: 2px; }
 :root[data-theme] .resizer { border-left-width: 2px; }
 
@@ -258,7 +266,9 @@
 :root[data-theme] .tabs { border-bottom: 2px solid var(--border); }
 :root[data-theme] .tabs button.active { background: var(--sel-bg); color: var(--sel-text); border-bottom-color: var(--sel-bg); }
 :root[data-theme] .tabs button.active .muted { color: inherit; opacity: 0.8; }
-:root[data-theme] .files li button.selected { background: var(--sel-bg); color: var(--sel-text); box-shadow: none; }
+:root[data-theme] .file-row.selected { background: var(--sel-bg); box-shadow: none; }
+:root[data-theme] .file-row.selected .file-btn, :root[data-theme] .file-row.selected .counts span,
+:root[data-theme] .file-row.selected .fstatus { color: var(--sel-text); }
 :root[data-theme] .ac li.active { background: var(--sel-bg); color: var(--sel-text); box-shadow: none; }
 :root[data-theme] .ac li.active .ac-dir { color: inherit; }
 :root[data-theme] .finding-item { border-width: 2px; }
@@ -266,7 +276,7 @@
 /* Room for the block shadow: the right panel clips anything wider. */
 :root[data-theme] .finding-item { width: calc(100% - 4px); }
 :root[data-theme] .step-item.selected { border: 2px solid var(--accent); box-shadow: 3px 3px 0 var(--accent); }
-:root[data-theme] .files li button.selected::before { content: "▸ "; }
+:root[data-theme] .file-row.selected .file-btn::before { content: "▸ "; }
 
 /* Scroll bars as flat blocks. */
 :root[data-theme] * { scrollbar-color: var(--border) var(--panel); }
@@ -317,3 +327,26 @@
 /* The theme menu's list (where the browser lets the page draw it). */
 :root[data-theme] .theme-pick select::picker(select) { border-width: 2px; box-shadow: 3px 3px 0 var(--shadow); }
 :root[data-theme] .theme-pick option:hover, :root[data-theme] .theme-pick option:focus-visible { background: var(--sel-bg); color: var(--sel-text); }
+
+/* The Send button and the ? dialog in the themes' own colours and edges. */
+:root[data-theme] .send-btn { background: var(--sel-bg); color: var(--sel-text); border-color: var(--sel-bg); filter: none; }
+:root[data-theme] .help { border-width: 2px; box-shadow: 6px 6px 0 var(--shadow); }
+:root[data-theme] .help h2, :root[data-theme] .help h3 { font: var(--d-sm)/1.3 var(--display); text-transform: uppercase; letter-spacing: 0.04em; }
+:root[data-theme] .help h2 { font-size: var(--d-md); }
+
+/* Pressed toggles, dialogs, cards and waiting states in each theme's colours and edges. */
+:root[data-theme] .ctl[aria-pressed="true"] { background: var(--sel-bg); color: var(--sel-text); border-color: var(--sel-bg); }
+:root[data-theme] .palette, :root[data-theme] .fatal-card, :root[data-theme] .toast { border-width: 2px; }
+:root[data-theme] .palette-list li.active { background: var(--sel-bg); color: var(--sel-text); box-shadow: none; }
+:root[data-theme] .palette-list li.active .kind, :root[data-theme] .palette-list li.active .sub { color: inherit; }
+:root[data-theme] .fatal-card h2, :root[data-theme] .palette-list .kind {
+  font-family: var(--display); letter-spacing: 0.04em; }
+:root[data-theme] .fatal-card h2 { font-size: var(--d-md); text-transform: uppercase; }
+:root[data-theme] .step-item.selected .step-n { background: var(--sel-bg); color: var(--sel-text); border-color: var(--sel-bg); }
+:root[data-theme] .q { border-width: 2px; }
+:root[data-theme] .progress { height: 4px; }
+:root[data-theme] .skel { background-image: none; animation: blink 1.1s steps(2, start) infinite; }
+@keyframes blink { 50% { opacity: .35; } }
+/* Counts beside display-font headings stay in the reading face: the pixel
+ * faces are unreadable at count size. */
+:root[data-theme] .count { font: var(--fs-sm) var(--mono); text-transform: none; letter-spacing: 0; }

@@ -510,32 +510,54 @@ def _is_repo(path: Path) -> bool:
     return _try(path, "rev-parse", "--git-dir") is not None
 
 
-def _gh_pr_view(repo: Path, number: int, owner_repo: str | None) -> dict:
+def _gh_json(repo: Path, number: int, owner_repo: str | None, fields: str,
+             timeout: float | None = None) -> dict:
     gh = shutil.which("gh")
     if gh is None:
         raise TargetError(GH_MISSING)
     argv = [gh, "pr", "view", str(number)]
     if owner_repo:
         argv += ["--repo", owner_repo]
-    argv += ["--json", "number,title,author,url,headRefOid,baseRefOid,headRefName,"
-                       "baseRefName,body,statusCheckRollup,mergeable,isDraft,reviewDecision"]
+    argv += ["--json", fields]
     env = dict(os.environ, GH_PROMPT_DISABLED="1", GIT_TERMINAL_PROMPT="0")
     try:
         proc = subprocess.run(argv, cwd=repo, shell=False, stdin=subprocess.DEVNULL,
                               capture_output=True, encoding="utf-8", errors="replace",
-                              env=env, check=False)
+                              env=env, check=False, timeout=timeout)
     except FileNotFoundError:
         raise TargetError(GH_MISSING) from None
+    except subprocess.TimeoutExpired:
+        raise TargetError(f"gh pr view {number} did not answer within {timeout:g} s") from None
     if proc.returncode != 0:
         raise TargetError(f"gh pr view {number} failed: {proc.stderr.strip()}")
     try:
         info = json.loads(proc.stdout)
     except json.JSONDecodeError:
         raise TargetError(f"gh pr view {number} printed something that is not JSON") from None
+    if not isinstance(info, dict):
+        raise TargetError(f"gh pr view {number} printed something that is not an object")
+    return info
+
+
+def _gh_pr_view(repo: Path, number: int, owner_repo: str | None) -> dict:
+    info = _gh_json(repo, number, owner_repo,
+                    "number,title,author,url,headRefOid,baseRefOid,headRefName,"
+                    "baseRefName,body,statusCheckRollup,mergeable,isDraft,reviewDecision")
     for key in ("headRefOid", "baseRefOid", "baseRefName"):
         if not isinstance(info.get(key), str) or not info[key]:
             raise TargetError(f"gh pr view {number} did not return {key}")
     return info
+
+
+def pr_status(repo: str | Path, number: int, url: str = "", timeout: float = 6.0) -> dict:
+    """The parts of an open PR that change while you read it: check counts,
+    mergeable, draft, review decision. One `gh pr view` call."""
+    m = _PR_URL_RE.match(url or "")
+    info = _gh_json(Path(repo), number, f"{m[1]}/{m[2]}" if m else None,
+                    "statusCheckRollup,mergeable,isDraft,reviewDecision", timeout=timeout)
+    return {"checks": summarize_checks(info.get("statusCheckRollup")),
+            "mergeable": str(info.get("mergeable") or ""), "draft": bool(info.get("isDraft")),
+            "review_decision": str(info.get("reviewDecision") or "")}
 
 
 def _pick_repo(spec: TargetSpec, repo: Path | None, cwd: Path) -> Path:

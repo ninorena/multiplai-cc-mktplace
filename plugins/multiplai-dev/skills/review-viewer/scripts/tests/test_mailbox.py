@@ -55,6 +55,22 @@ def test_decisions_keep_latest(box):
     assert not list(box.dir.glob(".decisions.json.*")), "temp file left behind"
 
 
+def test_viewed_marks_and_unmarks(box):
+    box.set_viewed("a.py", True)
+    data = box.set_viewed("b/c.py", True)
+    assert set(data) == {"a.py", "b/c.py"}
+    assert box.set_viewed("a.py", False) == {"b/c.py": data["b/c.py"]}
+    assert box.read_viewed() == {"b/c.py": data["b/c.py"]}
+    assert not list(box.dir.glob(".viewed.json.*")), "temp file left behind"
+
+
+def test_viewed_ignores_a_damaged_file(box):
+    box.viewed.write_text("[1, 2]")
+    assert box.read_viewed() == {}
+    box.viewed.write_text('{"a.py": 3, "b.py": "2026-01-01T00:00:00Z"}')
+    assert box.read_viewed() == {"b.py": "2026-01-01T00:00:00Z"}
+
+
 def _reply(*args, stdin: str | None = None) -> subprocess.CompletedProcess:
     return subprocess.run([PYTHON, "-m", "review_viewer", "reply", *args],
                           input=stdin, capture_output=True, text=True)
@@ -123,8 +139,9 @@ def test_mailbox_is_private(box):
     box.append_outbox(OutboxRow(reply_to="q", ts=utc_now(), text="a", done=True))
     _question(box)
     box.write_decision("abc", "accept")
+    box.set_viewed("a.py", True)
     assert stat.S_IMODE(box.dir.stat().st_mode) == 0o700
-    for path in (box.inbox, box.outbox, box.decisions):
+    for path in (box.inbox, box.outbox, box.decisions, box.viewed):
         assert stat.S_IMODE(path.stat().st_mode) == 0o600, path.name
 
 

@@ -88,6 +88,9 @@ class ChangeStats:
     commits: list[dict] = field(default_factory=list)
     todos_added: int = 0
     badges: list[Badge] = field(default_factory=list)
+    # {path: {"status": A|M|D|R|C|T, "added": int|None, "deleted": int|None}};
+    # None counts for a binary file. Drives the file list's marks and counts.
+    per_file: dict[str, dict] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -120,6 +123,32 @@ def parse_numstat(out: str) -> list[tuple[str, int | None, int | None]]:
             i += 2
         rows.append((path, None if a == "-" else int(a), None if d == "-" else int(d)))
     return rows
+
+
+def parse_name_status(out: str) -> dict[str, str]:
+    """{path: status letter} from `git diff --name-status -z`. A rename or
+    copy (`R100`, `C75`) is followed by the old and new paths; the new one is
+    the changed file."""
+    parts = out.split("\0")
+    status: dict[str, str] = {}
+    i = 0
+    while i < len(parts):
+        code = parts[i]
+        i += 1
+        if not code:
+            continue
+        letter = code[0]
+        if letter in "RC":
+            if i + 1 >= len(parts):
+                break
+            status[parts[i + 1]] = letter
+            i += 2
+        else:
+            if i >= len(parts):
+                break
+            status[parts[i]] = letter
+            i += 1
+    return status
 
 
 def read_commits(repo: str, base: str, head: str) -> list[dict]:
@@ -218,6 +247,10 @@ def lockfile_badge(s: ChangeStats) -> Badge | None:
                  f"(+{lock.get('added', 0)} −{lock.get('deleted', 0)}); dependencies moved.")
 
 
+# The ids pr_badges() can return, so a refresh can replace exactly those.
+PR_BADGE_IDS = frozenset({"pr-body", "checks", "conflicts", "draft", "approval"})
+
+
 def pr_badges(pr: dict | None) -> list[Badge]:
     """Badges from the PR metadata `serve` already fetched."""
     if not pr:
@@ -254,7 +287,9 @@ def change_stats(target: Target, pr: dict | None = None) -> ChangeStats:
     """Measure base..head. Raises GitError when git cannot read the range."""
     repo, base, head = target.repo_path, target.base_sha, target.head_sha
     s = ChangeStats(files=len(target.files_changed))
+    status = parse_name_status(git(repo, "diff", *_DIFF_FLAGS, "--name-status", "-z", base, head))
     for path, a, d in parse_numstat(git(repo, "diff", *_DIFF_FLAGS, "--numstat", "-z", base, head)):
+        s.per_file[path] = {"status": status.get(path, "M"), "added": a, "deleted": d}
         kind = classify(path)
         k = s.by_kind.setdefault(kind, {"files": 0, "added": 0, "deleted": 0})
         k["files"] += 1

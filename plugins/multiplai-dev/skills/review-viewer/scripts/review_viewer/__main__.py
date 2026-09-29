@@ -621,8 +621,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--repo-root", help="read git from here instead of target.repo_path")
     s.add_argument("--port", type=int, default=registry.PORT_START,
                    help=f"first port to try (default {registry.PORT_START}; 20 are tried)")
-    s.add_argument("--idle", type=float, default=30.0,
-                   help="minutes without a request before the server exits (0 = never)")
+    s.add_argument("--idle", type=float, default=0.0,
+                   help="minutes with no open page before the server exits "
+                        "(default 0 = never; it runs until `stop` or its container ends)")
     s.set_defaults(func=cmd_serve)
 
     r = sub.add_parser("reply", parents=[common], help="answer a question from the page")

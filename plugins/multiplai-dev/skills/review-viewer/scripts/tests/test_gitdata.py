@@ -331,3 +331,17 @@ def test_pr_without_gh_names_gh(remote, monkeypatch):
 def test_unknown_branch_is_a_clear_error(remote):
     with pytest.raises(TargetError, match="no branch 'nope'"):
         resolve_target(parse_target("nope"), remote["work"])
+
+
+def test_pr_status_reads_only_the_changing_fields(tmp_path, monkeypatch):
+    from review_viewer.gitdata import pr_status
+    log = _fake_gh(tmp_path, monkeypatch, {
+        "statusCheckRollup": [{"status": "COMPLETED", "conclusion": "SUCCESS"},
+                              {"status": "IN_PROGRESS"}],
+        "mergeable": "MERGEABLE", "isDraft": False, "reviewDecision": "APPROVED"})
+    got = pr_status(tmp_path, 7, "https://github.com/o/r/pull/7")
+    assert got == {"checks": {"total": 2, "passed": 1, "failed": 0, "pending": 1},
+                   "mergeable": "MERGEABLE", "draft": False, "review_decision": "APPROVED"}
+    argv = log.read_text().split()
+    assert argv[:4] == ["pr", "view", "7", "--repo"] and argv[4] == "o/r"
+    assert argv[-1] == "statusCheckRollup,mergeable,isDraft,reviewDecision"

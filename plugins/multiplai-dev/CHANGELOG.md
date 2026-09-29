@@ -17,6 +17,67 @@ time, not derived from a tag.
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-09-29
+
+### Added
+- review-viewer: a **"viewed" checkbox** on every changed file (and `v` for the
+  open one), with a count and progress bar above the file list. Ticks are kept
+  per review in `viewer/viewed.json`.
+- review-viewer: each file in the list shows whether it was added, modified,
+  deleted or renamed, and its `+`/`−` line counts.
+- review-viewer: **split view** (base on the left, head on the right; `s`),
+  **line wrap** (`w`), and the changed words inside a changed line are marked,
+  not only the whole line.
+- review-viewer: above the code, the function or class you are scrolled into,
+  "change 2 of 5", and ▲ ▼ buttons (`n` / `p`) to jump between changes.
+- review-viewer: **Go to** (`Ctrl+K`) finds a file, review step or finding by
+  name.
+- review-viewer: `?` opens a list of every shortcut.
+- review-viewer: each side panel has a hide button (`Ctrl+B` for the files,
+  `Ctrl+Alt+B` for the review panel). A hidden panel leaves a thin strip along
+  its edge; click it to bring the panel back. Remembered like the theme.
+
+### Changed
+- review-viewer: the chat is a round button in the bottom-right corner instead
+  of a message bar across the bottom. The button (or `c`) opens a drawer from
+  the bottom with the conversation and the message box; it stays open until
+  closed (`Esc`, `c` or Close). The button shows a spinner while an answer is
+  being written, a dot for unread answers, and a note for an unsent message.
+  Messages show who wrote them and when, and code blocks in answers have a
+  Copy button.
+- review-viewer: while the session is still writing, the Summary and Reviews
+  tabs show placeholder blocks and what is being written, instead of a sentence.
+  "Not authorised" and "server not answering" are cards over the page, and the
+  page reconnects by itself when the server is back. A request the server
+  never answers now gives up after 8 seconds instead of hanging.
+- review-viewer: one set of sizes and spacing for the whole page, so controls
+  in a row line up; short transitions on the chat, tabs and dialogs (none when
+  the system asks for reduced motion).
+- review-viewer: the line above the message box always says what the next
+  message is about: `Context: <review step | finding | file:lines | the whole change>`.
+- review-viewer: the theme, light/dark mode, panel widths and code layout are
+  remembered across viewers (a cookie shared by every port, and by every
+  OrbStack container). Before, each new viewer forgot them.
+- review-viewer: the header no longer shows which session answers.
+- review-viewer: a block's 💡 explanation is as wide as the visible code and
+  stays in view when the code scrolls sideways; before, a file with long lines
+  cut its text off on the right. "Follow up" opens the chat.
+- review-viewer: scrolling past the end of a file no longer opens the next one.
+  ‹ Prev / Next › buttons beside the file name do it instead. With a review
+  step open that covers several files, they move through that step's files
+  (and keep the step open); otherwise through every changed file.
+- review-viewer: while any GitHub check on the PR is still running, the page
+  asks GitHub again every minute (the server calls `gh` at most once a minute
+  per PR), so "Checks: N running" turns into passing or failing by itself.
+- review-viewer: if no walkthrough has appeared 3 minutes after the page
+  loads, the Summary and Reviews tabs stop showing a spinner and say nothing
+  has been written, and to ask for one in the chat.
+- review-viewer: the server no longer stops itself 30 minutes after the last
+  page closes; it runs until `stop` or until its container ends. `serve --idle
+  <minutes>` brings the old behaviour back.
+- review-viewer: Accept / Reject / Defer now sit at the bottom of the open
+  finding, with the decision shown as a badge in the findings list.
+
 ## [0.20.0] - 2026-09-27
 
 ### Added

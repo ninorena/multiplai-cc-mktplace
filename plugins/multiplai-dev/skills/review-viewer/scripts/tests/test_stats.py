@@ -132,6 +132,17 @@ def test_change_stats_on_the_fixture_repo(findings_path):
     assert _labels(s.badges)["tests"].level == "concern"
     d = stats.safe_change_stats(ff.target, {"body": ""})
     assert d["badges"][-1]["id"] == "pr-body"
+    # One entry per changed file; the binary file has no line counts.
+    assert set(s.per_file) == set(ff.target.files_changed)
+    assert s.per_file["assets/logo.bin"]["added"] is None
+    assert all(v["status"] in "AMDRCT" for v in s.per_file.values())
+    assert d["per_file"] == s.per_file
+
+
+def test_parse_name_status_handles_renames():
+    out = "M\0a.py\0A\0b.py\0D\0c.py\0R087\0old/x.py\0new/x.py\0"
+    assert stats.parse_name_status(out) == {"a.py": "M", "b.py": "A", "c.py": "D", "new/x.py": "R"}
+    assert stats.parse_name_status("") == {}
 
 
 def test_safe_change_stats_returns_none_when_git_cannot_read(findings_path, tmp_path):

@@ -31,7 +31,8 @@ from multiplai_core.log_utils import log_event
 from pydantic import ValidationError
 
 from . import netinfo, registry
-from .gitdata import GitError, PathNotInReview, allowed_paths, file_view
+from .gitdata import GitError, PathNotInReview, TargetError, allowed_paths, file_view, pr_status
+from .stats import PR_BADGE_IDS, pr_badges
 from .mailbox import Mailbox, new_question_id, utc_now, write_private
 from .models import Anchor, FindingsFile, InboxRow, Walkthrough, findings_digest
 from .walkthrough import Served, served_path, walkthrough_path
@@ -44,6 +45,8 @@ MAX_QUESTION_CHARS = 8000
 MAX_BODY_BYTES = 64 * 1024
 STEP_ID_RE = re.compile(r"^[a-z0-9-]{1,40}$")
 REJECT_LOG_INTERVAL = 60.0
+# However many pages ask, GitHub is asked about one PR at most this often.
+PR_REFRESH_S = 60.0
 STOP_MESSAGES = {
     "stop": "viewer stopped by stop --box",
     "findings_changed": "viewer restarted because a findings file changed",
@@ -74,10 +77,32 @@ class TargetState:
     pr: dict | None = None
     notice: str | None = None
     stats: dict | None = None
+    # `serve` fetched the PR just before the server started.
+    _pr_checked: float = field(default_factory=time.monotonic, repr=False)
+    _pr_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     @property
     def slug(self) -> str:
         return self.findings.target.slug
+
+    def refresh_pr(self) -> dict:
+        """Ask GitHub again for the PR's checks, mergeable state and review
+        decision (at most once per PR_REFRESH_S), and rebuild the PR badges.
+        A failed call keeps the last answer."""
+        with self._pr_lock:
+            if self.pr and time.monotonic() - self._pr_checked >= PR_REFRESH_S:
+                self._pr_checked = time.monotonic()
+                try:
+                    self.pr.update(pr_status(self.findings.target.repo_path, self.pr["number"],
+                                             self.pr.get("url") or ""))
+                except TargetError as exc:
+                    log.warning("cannot refresh PR #%s: %s", self.pr["number"], exc)
+                else:
+                    if self.stats is not None:
+                        self.stats["badges"] = (
+                            [b for b in self.stats.get("badges", []) if b.get("id") not in PR_BADGE_IDS]
+                            + [b.to_dict() for b in pr_badges(self.pr)])
+            return {"pr": self.pr, "stats": self.stats}
 
     def walkthrough(self) -> Walkthrough | None:
         """The walkthrough `walkthrough put` last wrote, or None. It was
@@ -287,6 +312,8 @@ def make_handler(viewer: Viewer):
                     if rest.endswith("/file"):
                         state = self._target(rest[: -len("/file")])
                         return self._file(state, q.get("path", ""))
+                    if rest.endswith("/pr"):
+                        return self._json(self._target(rest[: -len("/pr")]).refresh_pr())
                     if rest.endswith("/walkthrough"):
                         state = self._target(rest[: -len("/walkthrough")])
                         wt = state.walkthrough()
@@ -298,6 +325,7 @@ def make_handler(viewer: Viewer):
                         "findings": state.findings.model_dump(mode="json"),
                         "files": state.findings.target.files_changed,
                         "decisions": state.mailbox.read_decisions(),
+                        "viewed": state.mailbox.read_viewed(),
                         "questions": [r for r in state.mailbox.read_inbox()
                                       if r.get("kind") == "question"],
                         "pr": state.pr,
@@ -309,6 +337,8 @@ def make_handler(viewer: Viewer):
                     return self._ask(body)
                 if route == "/api/decision":
                     return self._decision(body)
+                if route == "/api/viewed":
+                    return self._viewed(body)
                 if route == "/api/shutdown":
                     reason = body.get("reason")
                     reason = reason if reason in STOP_MESSAGES else "stop"
@@ -385,6 +415,16 @@ def make_handler(viewer: Viewer):
                       session_id=viewer.session_id, target=state.slug,
                       finding_id=finding_id, decision=decision)
             self._json({"id": row.id, "decision": entry.model_dump(mode="json")})
+
+        def _viewed(self, body: dict) -> None:
+            state = self._target(body.get("target"))
+            path = body.get("path")
+            if not isinstance(path, str) or path not in state.findings.target.files_changed:
+                raise _Reject(404, "path is not a changed file")
+            viewed = body.get("viewed")
+            if not isinstance(viewed, bool):
+                raise _Reject(400, "viewed must be true or false")
+            self._json({"viewed": state.mailbox.set_viewed(path, viewed)})
 
     return Handler
 

@@ -155,6 +155,27 @@ def test_decision_writes_decisions_json(start_live):
     assert detail["decisions"][HIGH]["decision"] == "reject"
 
 
+def test_viewed_writes_viewed_json(start_live):
+    live = start_live()
+    _, detail = live.request("GET", f"/api/targets/{live.slug}")
+    assert detail["viewed"] == {}
+    path = detail["files"][0]
+    status, res = live.request("POST", "/api/viewed", {"target": live.slug, "path": path, "viewed": True})
+    assert status == 200 and set(res["viewed"]) == {path}
+    assert set(json.loads((live.box / "viewed.json").read_text())) == {path}
+    _, detail = live.request("GET", f"/api/targets/{live.slug}")
+    assert set(detail["viewed"]) == {path}
+    assert live.request("POST", "/api/viewed", {"target": live.slug, "path": path,
+                                                 "viewed": False})[1]["viewed"] == {}
+    # Only changed files, and only a real boolean.
+    assert live.request("POST", "/api/viewed", {"target": live.slug, "path": "../etc/passwd",
+                                                 "viewed": True})[0] == 404
+    assert live.request("POST", "/api/viewed", {"target": live.slug, "path": path,
+                                                 "viewed": "yes"})[0] == 400
+    # Nothing goes to the session's inbox.
+    assert read_rows(live.box / "inbox.jsonl") == []
+
+
 def test_idle_watchdog_stops_server(start_live):
     live = start_live(idle=0.02)  # 1.2 s
     live.thread.join(10)
@@ -428,3 +449,56 @@ def test_walkthrough_route_needs_the_token_and_serves_the_file(start_live):
     status, body = live.request("GET", route)
     assert status == 200 and body["overview_md"] == "o" and body["steps"] == []
     assert live.request("GET", "/api/targets/nope/walkthrough")[0] == 404
+
+
+def test_pr_refresh_asks_github_at_most_once_a_minute(findings_path, tmp_path, monkeypatch):
+    from review_viewer import server as srv
+    from review_viewer.mailbox import Mailbox
+    from review_viewer.models import load_findings
+    from review_viewer.stats import Badge
+    calls = []
+
+    def fake_status(repo, number, url, timeout=6.0):
+        calls.append((number, url))
+        return {"checks": {"total": 3, "passed": 3, "failed": 0, "pending": 0},
+                "mergeable": "MERGEABLE", "draft": False, "review_decision": ""}
+
+    monkeypatch.setattr(srv, "pr_status", fake_status)
+    pr = {"number": 7, "url": "https://github.com/o/r/pull/7", "body": "x" * 50,
+          "checks": {"total": 3, "passed": 1, "failed": 0, "pending": 2}}
+    stats = {"badges": [Badge("totals", "1 file", "good", "").to_dict(),
+                        Badge("checks", "Checks: 2 running", "note", "").to_dict()]}
+    state = srv.TargetState(findings=load_findings(findings_path), mailbox=Mailbox(tmp_path / "box"),
+                            allowed=set(), pr=pr, stats=stats)
+    # Just served: no second call yet.
+    assert state.refresh_pr()["pr"]["checks"]["pending"] == 2 and calls == []
+    state._pr_checked -= srv.PR_REFRESH_S
+    res = state.refresh_pr()
+    assert calls == [(7, "https://github.com/o/r/pull/7")]
+    assert res["pr"]["checks"]["pending"] == 0
+    assert [b["label"] for b in res["stats"]["badges"]] == ["1 file", "Checks: 3 passing"]
+    state.refresh_pr()
+    assert len(calls) == 1
+
+
+def test_pr_refresh_keeps_the_last_answer_when_gh_fails(findings_path, tmp_path, monkeypatch):
+    from review_viewer import server as srv
+    from review_viewer.gitdata import TargetError
+    from review_viewer.mailbox import Mailbox
+    from review_viewer.models import load_findings
+
+    def failing(*a, **k):
+        raise TargetError("gh pr view 7 failed: offline")
+
+    monkeypatch.setattr(srv, "pr_status", failing)
+    pr = {"number": 7, "checks": {"total": 1, "passed": 0, "failed": 0, "pending": 1}}
+    state = srv.TargetState(findings=load_findings(findings_path), mailbox=Mailbox(tmp_path / "box"),
+                            allowed=set(), pr=pr)
+    state._pr_checked -= srv.PR_REFRESH_S
+    assert state.refresh_pr()["pr"]["checks"]["pending"] == 1
+
+
+def test_pr_route_without_a_pr_returns_null(start_live):
+    live = start_live()
+    status, res = live.request("GET", f"/api/targets/{live.slug}/pr")
+    assert status == 200 and res["pr"] is None

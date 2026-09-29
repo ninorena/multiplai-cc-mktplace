@@ -10,10 +10,15 @@
 
   const L = window.ReviewLogic;
   const $ = (id) => document.getElementById(id);
-  const NOT_AUTHORISED = "This page is not authorised. Open the link the viewer printed " +
-    "(the \"open: file://…\" line) again.";
-  const SERVER_GONE = "The viewer server is not answering. It stops after 30 minutes " +
-    "without an open page; ask the session to start it again.";
+  const REQUEST_TIMEOUT_MS = 8000;
+  const FATAL = {
+    auth: { icon: "🔒", title: "This page is not authorised",
+      text: "The page needs the one-time link the viewer printed when it started.",
+      fix: "Open the \"open: file://…\" link from the session again." },
+    gone: { icon: "", title: "Reconnecting to the viewer…",
+      text: "The viewer server is not answering. This page reconnects by itself when it is back.",
+      fix: "It stops after 30 minutes without an open page; if it does not come back, ask the session to start it again." },
+  };
 
   const state = {
     token: typeof REVIEW_TOKEN === "string" ? REVIEW_TOKEN : "",
@@ -28,7 +33,6 @@
     views: new Map(),
     openRows: new Map(),
     shownRows: new Set(),
-    overscroll: null,
     showHidden: false,
     fileFilter: "",
     questions: [],
@@ -44,7 +48,6 @@
     fileNote: null,
     ac: null,
     chatOpen: false,
-    quietFocus: false,
     chatJustOpened: false,
     seen: new Set(),
     badgeOpen: null,
@@ -53,6 +56,14 @@
     walkKey: "",
     stepId: null,
     walkFocus: null,
+    viewed: {},
+    split: false,
+    wrap: false,
+    blockRows: [],
+    shownMsgs: new Set(),
+    fatal: null,
+    toastTimer: null,
+    palette: { items: [], index: 0 },
   };
 
   // --- small helpers ---------------------------------------------------------
@@ -73,10 +84,27 @@
     return node;
   }
 
-  function showBanner(text) {
-    const b = $("banner");
-    b.textContent = text;
-    b.hidden = !text;
+  /* A short message that goes away by itself: a request that failed. */
+  function showToast(text) {
+    const t = $("toast");
+    t.textContent = text;
+    t.hidden = !text;
+    clearTimeout(state.toastTimer);
+    if (text) state.toastTimer = setTimeout(() => { t.hidden = true; }, 6000);
+  }
+
+  /* A card over the whole page for the two states nothing on it works in:
+   * no token ("auth"), or the server not answering ("gone"). */
+  function showFatal(kind) {
+    state.fatal = kind || null;
+    const box = $("fatal");
+    box.hidden = !kind;
+    if (!kind) return;
+    const f = FATAL[kind];
+    $("fatal-icon").replaceChildren(f.icon ? f.icon : el("span", { class: "spinner" }));
+    $("fatal-title").textContent = f.title;
+    $("fatal-text").textContent = f.text;
+    $("fatal-fix").textContent = f.fix;
   }
 
   async function api(path, body) {
@@ -86,20 +114,27 @@
       opts.headers["Content-Type"] = "application/json";
       opts.body = JSON.stringify(body);
     }
+    // A stopped server behind the container's address can leave a request
+    // hanging instead of refusing it, so every request gives up after a while.
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), REQUEST_TIMEOUT_MS);
+    opts.signal = ctrl.signal;
     let res;
     try {
       res = await fetch(path, opts);
     } catch (err) {
-      showBanner(SERVER_GONE);
+      showFatal("gone");
       throw err;
+    } finally {
+      clearTimeout(timer);
     }
     if (res.status === 401) {
-      showBanner(NOT_AUTHORISED);
+      showFatal("auth");
       throw new Error("unauthorised");
     }
+    if (state.fatal === "gone") showFatal(null);
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
-    if ($("banner").textContent === SERVER_GONE) showBanner("");
     return data;
   }
 
@@ -117,10 +152,38 @@
     return L.escapeHtml(text).split("\n");
   }
 
+  /* Copy without the Clipboard API, which a page served over plain http
+   * (the container's .orb.local address) does not get. */
+  function copyText(text) {
+    if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
+    const area = el("textarea", { class: "copy-scratch", "aria-hidden": "true" });
+    area.value = text;
+    document.body.appendChild(area);
+    area.select();
+    try { document.execCommand("copy"); } finally { area.remove(); }
+    return Promise.resolve();
+  }
+
+  function addCopyButtons(node) {
+    for (const pre of node.querySelectorAll("pre")) {
+      const btn = el("button", { class: "copy-btn", type: "button", text: "Copy", title: "Copy this block" });
+      btn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        const code = pre.querySelector("code") || pre;
+        copyText(code.textContent).then(() => {
+          btn.textContent = "Copied";
+          setTimeout(() => { btn.textContent = "Copy"; }, 1500);
+        }).catch(() => showToast("Could not copy."));
+      });
+      pre.appendChild(btn);
+    }
+  }
+
   function renderMarkdown(node, text) {
     if (window.marked && window.DOMPurify) {
       node.innerHTML = window.DOMPurify.sanitize(window.marked.parse(text));
       if (window.hljs) node.querySelectorAll("pre code").forEach((c) => window.hljs.highlightElement(c));
+      addCopyButtons(node);
     } else {
       node.classList.add("plain");
       node.textContent = text;
@@ -202,7 +265,7 @@
 
   async function boot() {
     if (!state.token) {
-      showBanner(NOT_AUTHORISED);
+      showFatal("auth");
       return;
     }
     try {
@@ -210,8 +273,6 @@
     } catch (err) {
       return;
     }
-    const sid = (state.who.session_id || "").slice(0, 8) || "no session id";
-    $("who").textContent = "Answers come from " + state.who.agent + " (session " + sid + ")";
     const res = await api("/api/targets");
     state.targets = res.targets;
     const sel = $("target-select");
@@ -220,8 +281,15 @@
       for (const t of state.targets) sel.appendChild(el("option", { value: t.slug, text: t.label }));
       sel.addEventListener("change", () => loadTarget(sel.value));
     }
+    state.split = prefs.load(SPLIT_KEY) === "1";
+    state.wrap = prefs.load(WRAP_KEY) === "1";
     bindEvents();
-    setInterval(() => api("/api/alive").catch(() => {}), 10000);
+    // Every 10 s; every 3 s while the server is away, so the page comes back by itself.
+    let tick = 0;
+    setInterval(() => {
+      tick += 1;
+      if (state.fatal === "gone" || tick % 3 === 0) api("/api/alive").catch(() => {});
+    }, 3000);
     if (state.targets.length) await loadTarget(state.targets[0].slug);
     schedulePoll();
   }
@@ -231,6 +299,7 @@
     state.slug = slug;
     state.detail = await api(targetUrl());
     state.findingsById = new Map(state.detail.findings.findings.map((f) => [f.id, f]));
+    state.viewed = state.detail.viewed || {};
     state.questions = state.detail.questions || [];
     state.replyRows = [];
     state.replies = new Map();
@@ -255,14 +324,46 @@
     renderTabs();
     renderWalk();
     renderSummary();
+    schedulePrRefresh();
+    state.walkSince = Date.now();
+    const walkGen = state.pollGen;
+    setTimeout(() => {
+      if (walkGen !== state.pollGen || state.walk) return;
+      renderWalk();
+      renderSummary();
+    }, WALK_WAIT_MS + 50);
     await Promise.all([pollOnce(), pollWalk()]);
-    const first = L.findingOrder(L.groupFindings(state.detail.findings.findings,
-      state.detail.decisions, state.showHidden))[0];
+    const first = L.findingOrder(L.groupFindings(state.detail.findings.findings, state.detail.decisions, state.showHidden))[0];
     if (first) await selectFinding(first, { stay: true });
     else {
       renderDetail();
       if (state.detail.files.length) await openFile(state.detail.files[0]);
     }
+  }
+
+  // --- PR checks: asked again every minute while any is still running ---------------
+
+  const PR_REFRESH_MS = 60000;
+
+  function schedulePrRefresh() {
+    clearTimeout(state.prTimer);
+    const pr = state.detail.pr;
+    if (!pr || !pr.checks || !pr.checks.pending) return;
+    const gen = state.pollGen;
+    state.prTimer = setTimeout(async () => {
+      if (gen !== state.pollGen) return;
+      try {
+        const res = await api(targetUrl("/pr"));
+        if (gen !== state.pollGen) return;
+        state.detail.pr = res.pr;
+        state.detail.stats = res.stats;
+        renderHeader();
+        renderSummary();
+      } catch (err) {
+        // A server that is gone shows its own card; try again next minute.
+      }
+      schedulePrRefresh();
+    }, PR_REFRESH_MS);
   }
 
   // --- header, tabs ----------------------------------------------------------------
@@ -294,17 +395,44 @@
   const TABS = { summary: ["tab-summary", "summary"], walk: ["tab-walk", "walkthrough"], finding: ["tab-finding", "finding"] };
 
   function renderTabs() {
+    if (state.view) renderFileNav();
     for (const [name, [tab, panel]] of Object.entries(TABS)) {
       const on = state.tab === name;
       $(tab).setAttribute("aria-selected", String(on));
       $(tab).classList.toggle("active", on);
       $(panel).hidden = !on;
     }
-    $("decide").hidden = state.tab !== "finding" || !(state.selected && state.findingsById.get(state.selected));
     const n = state.walk ? state.walk.steps.length : 0;
-    $("walk-count").textContent = !state.walk ? "(waiting)" : (state.walk.complete ? "(" + n + ")" : "(" + n + ", in progress)");
+    $("walk-count").textContent = state.walk ? String(n) : "";
+    $("walk-count").classList.toggle("live", !state.walk || !state.walk.complete);
+    $("walk-count").title = !state.walk ? "Waiting for the session" : state.walk.complete ? "" : "Still being written";
     const nf = state.detail ? state.detail.findings.findings.length : 0;
-    $("finding-count").textContent = nf ? "(" + nf + ")" : "";
+    $("finding-count").textContent = nf ? String(nf) : "";
+  }
+
+  // --- waiting states ----------------------------------------------------------------
+
+  /* Grey bars where text will be, with a line saying what is being waited for. */
+  function skeleton(caption, widths) {
+    const box = el("div", { class: "skeleton", "aria-busy": "true" },
+      [el("div", { class: "skel-caption" }, [el("span", { class: "spinner" }), caption])]);
+    for (const w of widths || ["w90", "w75", "w90", "w60"]) box.appendChild(el("span", { class: "skel " + w }));
+    return box;
+  }
+
+  /* The page cannot see whether the session is writing a walkthrough. The
+   * session starts one within a minute or two of serving the page, so after
+   * WALK_WAIT_MS with nothing written, stop claiming it is on the way. */
+  const WALK_WAIT_MS = 3 * 60 * 1000;
+  const NO_WALK_TEXT = "Nothing has been written yet, so the session may not be writing a walkthrough. " +
+    "Ask for one in the chat below.";
+
+  function walkOverdue() {
+    return !state.walk && Date.now() - state.walkSince >= WALK_WAIT_MS;
+  }
+
+  function emptyState(icon, text) {
+    return el("div", { class: "empty-state" }, [el("span", { class: "big", text: icon }), text]);
   }
 
   // --- summary ---------------------------------------------------------------------
@@ -320,9 +448,12 @@
       const mine = badges.filter((b) => b.source === source);
       const row = el("div", { class: "badge-row" }, [el("div", { class: "label", text: title })]);
       if (!mine.length) {
-        row.appendChild(el("span", { class: "muted small", text: source === "measured"
-          ? "Not available: git could not read these commits."
-          : (state.walk ? "None yet." : "Written with the walkthrough.") }));
+        if (source === "assessed" && (!state.walk || !state.walk.complete) && !walkOverdue()) {
+          for (let i = 0; i < 3; i++) row.appendChild(el("span", { class: "skel pill" }));
+        } else {
+          row.appendChild(el("span", { class: "muted small", text: source === "measured"
+            ? "Not available: git could not read these commits." : "None." }));
+        }
       }
       for (const b of mine) {
         row.appendChild(el("button", {
@@ -342,16 +473,21 @@
       if (open.source === "assessed") renderMarkdown(detail, open.detail);
       else detail.replaceChildren(el("p", { text: open.detail }));
     }
-    $("walk-status").textContent = L.walkStatus(state.walk);
-    $("walk-status").hidden = !L.walkStatus(state.walk);
     const overview = $("walk-overview");
     if (!state.walk) {
-      overview.replaceChildren(el("p", { class: "muted", text: "The session writes an overview and the reviews after it reads the diff; they appear here as they are written." }));
+      overview.replaceChildren(el("div", { class: "label", text: "Overview" }), walkOverdue()
+        ? emptyState("✎", NO_WALK_TEXT)
+        : skeleton((state.who ? state.who.agent : "The session") + " is reading the diff and writing the overview"));
     } else {
       renderMarkdown(overview, state.walk.overview_md);
+      overview.insertBefore(el("div", { class: "label", text: "Overview" }), overview.firstChild);
       const cov = L.walkCoverage(state.walk, state.detail.files, state.detail.findings.findings);
-      overview.appendChild(el("p", { class: "muted small", text: "The reviews cover " + cov.files + " of " + cov.filesTotal +
+      overview.appendChild(el("p", { class: "coverage", text: "The reviews cover " + cov.files + " of " + cov.filesTotal +
         " changed files" + (cov.findingsTotal ? " and link " + cov.findings + " of " + cov.findingsTotal + " findings" : "") + "." }));
+      if (!state.walk.complete) {
+        overview.appendChild(el("div", { class: "skel-caption" }, [el("span", { class: "spinner" }),
+          "Still writing: " + state.walk.steps.length + " review" + (state.walk.steps.length === 1 ? "" : "s") + " so far"]));
+      }
       if (state.walk.skipped.length) {
         const ul = el("ul", { class: "skipped" });
         for (const k of state.walk.skipped) {
@@ -402,11 +538,14 @@
   }
 
   function renderWalk() {
+    if (state.view) renderFileNav();
     const list = $("walk-steps");
     list.replaceChildren();
     if (!state.walk) {
-      list.appendChild(el("li", { class: "muted", text: "Waiting for the session to write the reviews." }));
-      $("walk-step").replaceChildren();
+      $("walk-step").replaceChildren(walkOverdue()
+        ? emptyState("✎", NO_WALK_TEXT)
+        : skeleton((state.who ? state.who.agent : "The session") + " is writing the reviews",
+          ["w75", "w60", "w75", "w40"]));
       return;
     }
     state.walk.steps.forEach((s, i) => {
@@ -419,6 +558,9 @@
         },
       }, [el("span", { class: "step-n", text: String(i + 1) }), el("span", { text: s.title })])]));
     });
+    if (!state.walk.complete) {
+      list.appendChild(el("li", { class: "skel-caption" }, [el("span", { class: "spinner" }), "Writing more reviews…"]));
+    }
     renderStep();
   }
 
@@ -432,7 +574,7 @@
         box.appendChild(el("p", {}, [el("span", { class: "mono", text: state.fileNote }),
           reason ? " is not explained: " + reason + "." : " is not explained by any review yet."]));
       } else if (state.walk && state.walk.steps.length) {
-        box.appendChild(el("p", { class: "muted", text: "Pick a review, click a file, or press ] to start." }));
+        box.appendChild(emptyState("☝", "Pick a review above, click a file, or press ] to start."));
       }
       return;
     }
@@ -470,7 +612,7 @@
       box.appendChild(el("div", { class: "label", text: "Findings in this step" }));
       for (const f of cards) {
         box.appendChild(el("button", {
-          class: "finding-item finding-card", "data-id": f.id,
+          class: "finding-item finding-card " + f.severity, "data-id": f.id,
           onclick: () => { setTab("finding"); selectFinding(f.id); },
         }, [
           el("span", { class: "badge " + f.severity, text: f.severity }),
@@ -557,17 +699,18 @@
     const findings = state.detail.findings.findings;
     const grouped = L.groupFindings(findings, state.detail.decisions, state.showHidden);
     $("hidden-label").textContent = "Show refuted and rejected (" + grouped.hidden + ")";
+    $("show-hidden").parentElement.hidden = !grouped.hidden;
     if (!findings.length) {
-      box.appendChild(el("p", { class: "empty", text: "No findings: this is the plain diff. Pick a file, select lines, and ask about them." }));
+      box.appendChild(emptyState("✓", "No code review for these commits: this is the plain diff. " +
+        "Select lines in the code to ask about them."));
     }
     for (const sev of L.SEVERITIES) {
       const items = grouped.groups[sev] || [];
       if (!items.length) continue;
       box.appendChild(el("h2", { class: "sev-h " + sev, text: sev + " (" + items.length + ")" }));
       for (const f of items) {
-        const decision = state.detail.decisions[f.id];
         box.appendChild(el("button", {
-          class: "finding-item" + (f.id === state.selected ? " selected" : "") +
+          class: "finding-item " + sev + (f.id === state.selected ? " selected" : "") +
             (L.isHidden(f, state.detail.decisions) ? " hidden-finding" : ""),
           "data-id": f.id,
           onclick: async () => {
@@ -576,7 +719,10 @@
           },
         }, [
           el("span", { class: "badge " + sev, text: f.status }),
-          decision ? el("span", { class: "badge " + decision.decision, text: decision.decision }) : null,
+          state.detail.decisions[f.id] ? el("span", {
+            class: "badge " + state.detail.decisions[f.id].decision,
+            text: state.detail.decisions[f.id].decision,
+          }) : null,
           el("span", { class: "claim", text: f.claim }),
           el("span", { class: "where", text: f.file + ":" + f.line_start }),
         ]));
@@ -584,7 +730,56 @@
     }
   }
 
+  // --- file status, counts, viewed ----------------------------------------------
+
+  const STATUS_WORD = { A: "added", M: "modified", D: "deleted", R: "renamed", C: "copied", T: "type changed" };
+
+  function fileInfo(path) {
+    const per = state.detail.stats && state.detail.stats.per_file;
+    return (per && per[path]) || null;
+  }
+
+  function statusMark(info) {
+    const st = (info && info.status) || "M";
+    return el("span", { class: "fstatus " + st, title: STATUS_WORD[st] || st, text: st });
+  }
+
+  function countsNode(info) {
+    const box = el("span", { class: "counts" });
+    if (!info) return box;
+    if (info.added == null) box.appendChild(el("span", { class: "muted", text: "bin" }));
+    else {
+      box.appendChild(el("span", { class: "plus", text: "+" + info.added }));
+      box.appendChild(el("span", { class: "minus", text: "−" + (info.deleted || 0) }));
+    }
+    return box;
+  }
+
+  function isViewed(path) {
+    return Object.prototype.hasOwnProperty.call(state.viewed, path);
+  }
+
+  async function setViewed(path, viewed) {
+    const before = state.viewed;
+    // Show it at once; the server's answer replaces it.
+    state.viewed = Object.assign({}, before);
+    if (viewed) state.viewed[path] = new Date().toISOString();
+    else delete state.viewed[path];
+    renderFiles();
+    renderFileHead();
+    try {
+      const res = await api("/api/viewed", { target: state.slug, path: path, viewed: viewed });
+      state.viewed = res.viewed;
+    } catch (err) {
+      state.viewed = before;
+      showToast("Could not save \u201cviewed\u201d: " + err.message);
+    }
+    renderFiles();
+    renderFileHead();
+  }
+
   function renderFiles() {
+    if (state.view) renderFileNav();
     const list = $("files");
     list.replaceChildren();
     const filter = state.fileFilter.toLowerCase();
@@ -593,15 +788,32 @@
     for (const group of L.groupFilesByDir(shown)) {
       list.appendChild(el("li", { class: "dir-h", title: group.dir || "(repository root)", text: L.shortDir(group.dir) }));
       for (const f of group.files) {
-        list.appendChild(el("li", {}, [el("button", {
-          class: (f.path === state.filePath ? "selected" : "") + (inStep.has(f.path) ? " in-step" : ""),
-          title: f.path,
-          text: f.name,
-          onclick: async () => { clearPick(); await openFile(f.path); await showFileReview(f.path); },
-        })]));
+        const info = fileInfo(f.path);
+        const viewed = isViewed(f.path);
+        const box = el("input", { type: "checkbox", title: viewed ? "Viewed; click to unmark" : "Mark viewed",
+          "aria-label": "Viewed: " + f.path });
+        box.checked = viewed;
+        box.addEventListener("change", () => setViewed(f.path, box.checked));
+        list.appendChild(el("li", {
+          class: "file-row" + (f.path === state.filePath ? " selected" : "") + (inStep.has(f.path) ? " in-step" : "") +
+            (viewed ? " viewed" : ""),
+        }, [
+          statusMark(info),
+          el("button", {
+            class: "file-btn", title: f.path + (info ? " (" + (STATUS_WORD[info.status] || info.status) + ")" : ""),
+            text: f.name,
+            onclick: async () => { clearPick(); await openFile(f.path); await showFileReview(f.path); },
+          }),
+          countsNode(info),
+          box,
+        ]));
       }
     }
-    const current = list.querySelector("button.selected");
+    if (!shown.length) list.appendChild(el("li", { class: "empty small", text: "No changed file matches." }));
+    const vc = L.viewedCount(state.detail.files, state.viewed);
+    $("viewed-count").textContent = vc.done + " of " + vc.total + " viewed";
+    $("viewed-bar").style.width = (vc.total ? Math.round(100 * vc.done / vc.total) : 0) + "%";
+    const current = list.querySelector(".file-row.selected");
     if (current) current.scrollIntoView({ block: "nearest" });
   }
 
@@ -618,6 +830,12 @@
     return [p.min, Math.max(p.min + 40, Math.round(window.innerWidth * 0.5))];
   }
 
+  /* Widths and the code layout are saved where theme.js saves the theme, so
+   * every viewer shares them. */
+  const prefs = window.ReviewPrefs || { load: () => "", save: () => {} };
+  const SPLIT_KEY = "review-viewer.split";
+  const WRAP_KEY = "review-viewer.wrap";
+
   /* Sets the width through the CSSOM: the CSP forbids style attributes, not this. */
   function setPanelWidth(name, px, save) {
     const p = PANELS[name];
@@ -626,20 +844,40 @@
     if (w == null) return;
     document.documentElement.style.setProperty(p.cssVar, w + "px");
     $(p.handle).setAttribute("aria-valuenow", String(w));
-    if (save) {
-      try { localStorage.setItem(p.key, String(w)); } catch (err) { /* private window */ }
-    }
+    if (save) prefs.save(p.key, String(w));
   }
 
   function panelWidth(name) {
     return $(name).getBoundingClientRect().width;
   }
 
+  /* Hiding a side panel leaves a strip along its edge that brings it back.
+   * Saved with the widths. */
+  function setPanelHidden(name, hidden, save) {
+    const panel = $(name);
+    if (hidden && panel.contains(document.activeElement)) document.activeElement.blur();
+    $("layout").classList.toggle(name + "-hidden", hidden);
+    if (save) prefs.save("review-viewer." + name + "-hidden", hidden ? "1" : "");
+    if (!hidden) $(name === "side" ? "side-hide" : "detail-hide").focus({ preventScroll: true });
+  }
+
+  function togglePanel(name) {
+    setPanelHidden(name, !$("layout").classList.contains(name + "-hidden"), true);
+  }
+
+  function bindPanels() {
+    for (const name of Object.keys(PANELS)) {
+      if (prefs.load("review-viewer." + name + "-hidden") === "1") setPanelHidden(name, true, false);
+      $(name + "-hide").addEventListener("click", () => setPanelHidden(name, true, true));
+      $(name + "-rail").addEventListener("click", () => setPanelHidden(name, false, true));
+    }
+  }
+
   function bindResize() {
+    bindPanels();
     for (const [name, p] of Object.entries(PANELS)) {
       const handle = $(p.handle);
-      let saved = null;
-      try { saved = localStorage.getItem(p.key); } catch (err) { /* private window */ }
+      const saved = prefs.load(p.key);
       if (saved) setPanelWidth(name, saved, false);
       handle.addEventListener("pointerdown", (ev) => {
         ev.preventDefault();
@@ -697,11 +935,8 @@
     const box = $("finding-detail");
     box.replaceChildren();
     const f = state.selected && state.findingsById.get(state.selected);
-    $("decide").hidden = !f || state.tab !== "finding";
     if (!f) {
-      box.appendChild(el("p", { class: "muted", text: state.detail.findings.findings.length
-        ? "Pick a finding above, or select lines in the code to ask about them."
-        : "Select lines in the code (drag, or click a line number and shift-click another) to ask about them." }));
+      if (state.detail.findings.findings.length) box.appendChild(emptyState("☝", "Pick a finding above, or press j."));
       renderThread();
       return;
     }
@@ -748,29 +983,38 @@
         box.appendChild(ul);
       }
     }
-    renderDecision();
+    box.appendChild(decisionBox(f));
     renderThread();
   }
 
-  function renderDecision() {
-    const f = state.selected && state.findingsById.get(state.selected);
-    if (!f) return;
+  // --- accept / reject / defer -------------------------------------------------
+
+  function decisionBox(f) {
     const d = state.detail.decisions[f.id];
-    $("decision-now").textContent = d ? "— " + d.decision + (d.note ? ": " + d.note : "") : "— none yet";
+    const note = el("input", { type: "text", class: "decision-note", placeholder: "Note (optional)",
+      "aria-label": "Decision note" });
+    const buttons = ["accept", "reject", "defer"].map((k) => el("button", {
+      class: "ctl",
+      "aria-pressed": String(!!d && d.decision === k),
+      text: k[0].toUpperCase() + k.slice(1),
+      onclick: () => decide(f.id, k, note.value.trim()),
+    }));
+    return el("section", { class: "decide" }, [
+      el("div", { class: "label", text: "Decision" }),
+      el("p", { class: "muted", text: d ? d.decision + (d.note ? ": " + d.note : "") : "None yet." }),
+      note,
+      el("div", { class: "decide-row" }, buttons),
+    ]);
   }
 
-  async function decide(decision) {
-    const id = state.selected;
-    if (!id) return;
-    const note = $("decision-note").value.trim();
+  async function decide(id, decision, note) {
     try {
       const res = await api("/api/decision", { target: state.slug, finding_id: id, decision: decision, note: note });
       state.detail.decisions[id] = res.decision;
-      $("decision-note").value = "";
       renderFindingList();
-      renderDecision();
+      renderDetail();
     } catch (err) {
-      showBanner("Could not record the decision: " + err.message);
+      showToast("Could not record the decision: " + err.message);
     }
   }
 
@@ -804,63 +1048,104 @@
     const status = $("chat-status");
     status.replaceChildren();
     if (st.pending) status.append(el("span", { class: "spinner" }), agent + " is answering" + (st.pending > 1 ? " " + st.pending + " messages" : "") + "…");
-    else if (st.unread) status.append(el("span", { class: "unread-dot" }), st.unread + " new answer" + (st.unread > 1 ? "s" : "") + " — click the box to read");
+    else if (st.unread) status.append(el("span", { class: "unread-dot" }), st.unread + " new answer" + (st.unread > 1 ? "s" : "") + " · press c to read");
     $("chat-title").textContent = "Chat with " + agent;
+    renderFab();
     if (!open) return;
     const list = $("thread");
-    const chat = $("chat");
-    const atBottom = chat.scrollTop + chat.clientHeight >= chat.scrollHeight - 4;
+    const atBottom = list.scrollTop + list.clientHeight >= list.scrollHeight - 4;
     list.replaceChildren();
     const msgs = L.chatQuestions(state.questions);
     if (!msgs.length) {
-      list.appendChild(el("li", { class: "muted" , text: "No messages yet. Ask about the whole change, or type @ to point at a file and lines." }));
+      list.appendChild(el("li", {}, [emptyState("💬", "No messages yet. Ask about the whole change, " +
+        "or type @ to point at a file and lines.")]));
     }
     for (const q of msgs) {
       const reply = state.replies.get(q.id);
+      const pending = L.isPending(q.id, state.replies);
       const answer = el("div", { class: "a" });
       if (reply && reply.text) renderMarkdown(answer, reply.text);
-      if (L.isPending(q.id, state.replies)) {
+      if (pending) {
         answer.appendChild(el("div", { class: "muted" }, [el("span", { class: "spinner" }), agent + " is answering…"]));
       }
-      list.appendChild(el("li", {}, [
-        el("div", { class: "q" }, [el("span", { class: "anchor", text: chatContext(q) }), q.text]),
-        answer,
+      // Slide in only what was not on screen before, and an answer when it lands.
+      const key = q.id + (pending ? ":p" : ":d");
+      const isNew = !state.shownMsgs.has(key);
+      state.shownMsgs.add(key);
+      list.appendChild(el("li", { class: isNew ? "new" : "" }, [
+        el("div", { class: "q-wrap" }, [
+          el("div", { class: "msg-meta" }, [
+            el("span", { class: "anchor", text: chatContext(q), title: chatContext(q) }),
+            el("span", { class: "who", text: "You" }),
+            q.ts ? el("time", { datetime: q.ts, text: clock(q.ts) }) : null,
+          ]),
+          el("div", { class: "q", text: q.text }),
+        ]),
+        el("div", { class: "a-wrap" }, [
+          el("div", { class: "msg-meta" }, [
+            el("span", { class: "who", text: agent }),
+            reply && reply.ts ? el("time", { datetime: reply.ts, text: clock(reply.ts) }) : null,
+          ]),
+          answer,
+        ]),
       ]));
     }
-    if (atBottom || state.chatJustOpened) chat.scrollTop = chat.scrollHeight;
+    if (atBottom || state.chatJustOpened) list.scrollTop = list.scrollHeight;
     state.chatJustOpened = false;
   }
 
+  /* "14:02" today, "3 Oct 14:02" on another day, in the viewer's time zone. */
+  function clock(iso) {
+    const d = new Date(iso);
+    if (isNaN(d)) return "";
+    const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    return d.toDateString() === new Date().toDateString() ? time
+      : d.toLocaleDateString([], { day: "numeric", month: "short" }) + " " + time;
+  }
+
+  /* The drawer opens from the round button, `c`, or "Ask about these lines",
+   * and stays open until it is closed: clicking the code does not close it. */
   function setChatOpen(open) {
     if (state.chatOpen === open) return;
     state.chatOpen = open;
     state.chatJustOpened = open;
-    $("chat").hidden = !open;
-    $("composer").classList.toggle("open", open);
-    $("question").rows = open ? 3 : 1;
+    const drawer = $("composer");
+    drawer.classList.toggle("open", open);
+    drawer.setAttribute("aria-hidden", String(!open));
+    $("chat-fab").setAttribute("aria-expanded", String(open));
+    if (open) {
+      const box = $("question");
+      box.focus();
+      box.setSelectionRange(box.value.length, box.value.length);
+    } else if (drawer.contains(document.activeElement)) {
+      document.activeElement.blur();
+    }
     renderThread();
+  }
+
+  /* The round button: a spinner while an answer is being written, a dot for
+   * unread answers, and a note beside it for those or for an unsent draft. */
+  function renderFab() {
+    const st = L.chatStatus(state.questions, state.replies, state.seen);
+    const open = state.chatOpen;
+    $("chat-fab").parentElement.hidden = open;
+    $("chat-fab").classList.toggle("busy", !!st.pending);
+    $("fab-dot").hidden = !st.unread;
+    const draft = $("question").value.trim();
+    const note = $("fab-note");
+    const text = st.unread ? st.unread + " new answer" + (st.unread > 1 ? "s" : "") + " · press c"
+      : draft ? "Unsent message · " + $("ask-about").textContent : "";
+    note.textContent = text;
+    note.hidden = open || !text;
   }
 
   function bindChat() {
     const footer = $("composer");
-    // Focus from a click into the box opens the chat. Focus that insertRef
-    // gives the box (a line clicked in the code) does not, so the chat does
-    // not cover the code while more lines are being picked; typing opens it.
-    footer.addEventListener("focusin", () => {
-      if (state.quietFocus) { state.quietFocus = false; return; }
-      setChatOpen(true);
-    });
-    $("question").addEventListener("mousedown", () => setChatOpen(true));
-    $("question").addEventListener("input", () => setChatOpen(true));
-    footer.addEventListener("focusout", () => {
-      // Focus moving within the footer (the chat, its links) keeps it open.
-      setTimeout(() => { if (!footer.contains(document.activeElement)) setChatOpen(false); }, 0);
-    });
-    $("chat-close").addEventListener("click", () => { document.activeElement.blur(); setChatOpen(false); });
+    $("chat-fab").addEventListener("click", () => setChatOpen(true));
+    $("chat-close").addEventListener("click", () => setChatOpen(false));
     footer.addEventListener("keydown", (ev) => {
       if (ev.key === "Escape" && !state.ac) {
         ev.stopPropagation();
-        document.activeElement.blur();
         setChatOpen(false);
       }
     });
@@ -885,7 +1170,7 @@
       renderThread();
       schedulePoll(0);
     } catch (err) {
-      showBanner("Could not send the question: " + err.message);
+      showToast("Could not send the question: " + err.message);
     } finally {
       $("send").disabled = false;
     }
@@ -973,17 +1258,44 @@
       (state.showHidden || !L.isHidden(f, state.detail.decisions)));
   }
 
-  function renderCode() {
+  /* Above the code: status, path, line counts, viewed, and the layout buttons. */
+  function renderFileHead() {
     const view = state.view;
+    if (!view) return;
+    const info = fileInfo(view.path);
+    const st = $("file-status");
+    st.hidden = !info;
+    if (info) {
+      st.className = "fstatus " + info.status;
+      st.textContent = info.status;
+      st.title = STATUS_WORD[info.status] || info.status;
+    }
     $("file-path").textContent = view.path;
+    $("file-path").title = view.path;
+    $("file-counts").replaceChildren(...countsNode(info).childNodes);
     const flags = [];
     if (view.deleted) flags.push("deleted at head; first lines shown");
     if (view.truncated && !view.deleted) flags.push("large file: changes and cited lines only");
     if (view.binary) flags.push("binary");
     $("file-flags").textContent = flags.join(" · ");
+    $("file-viewed").checked = isViewed(view.path);
+    $("layout-unified").setAttribute("aria-pressed", String(!state.split));
+    $("layout-split").setAttribute("aria-pressed", String(state.split));
+    $("wrap-btn").setAttribute("aria-pressed", String(state.wrap));
+    renderFileNav();
+  }
+
+  function renderCode() {
+    const view = state.view;
+    renderFileHead();
     const code = $("code");
+    code.classList.toggle("split", state.split);
+    code.classList.toggle("wrap", state.wrap);
     if (view.binary) {
-      code.replaceChildren(el("p", { class: "notice", text: "Binary file: no text to show." }));
+      state.blockRows = [];
+      state.rowEls = [];
+      code.replaceChildren(emptyState("▦", "Binary file: no text to show."));
+      updateBlockLine();
       return;
     }
     const textRows = view.rows.filter((r) => r.k === "ctx" || r.k === "add");
@@ -996,7 +1308,16 @@
     let di = 0;
     const rowHtml = view.rows.map((r) => (r.k === "gap" ? L.escapeHtml(r.t)
       : r.k === "del" ? delHtml[di++] || "" : textHtml[ti++] || ""));
+    // A deleted line and the added line that replaces it: mark the words that differ.
+    for (const [ri, partner] of L.changePairs(view.rows)) {
+      if (view.rows[ri].k !== "del") continue;
+      const d = L.wordDiff(view.rows[ri].t, view.rows[partner].t);
+      if (!d) continue;
+      rowHtml[ri] = L.markRanges(rowHtml[ri], d.del, "wd-del");
+      rowHtml[partner] = L.markRanges(rowHtml[partner], d.add, "wd-add");
+    }
     const cited = view.cited_ranges || [];
+    const oldNum = L.oldNumbers(view.rows);
     const selected = state.selected && state.findingsById.get(state.selected);
     const dots = new Map();
     for (const f of findingsIn(view.path)) {
@@ -1021,41 +1342,154 @@
     const starts = L.blockStarts(view.rows);
     const explained = L.explainByBlock(state.questions, view.path);
     state.shownRows = new Set(items.filter((it) => it.row != null).map((it) => it.row));
-    const tbody = el("tbody");
-    for (const it of items) {
-      if (it.fold) {
-        tbody.appendChild(foldRow(view, it.fold));
-        continue;
-      }
-      const ri = it.row;
-      const r = view.rows[ri];
-      if (starts.has(ri)) tbody.appendChild(blockHead(view.path, starts.get(ri), explained));
-      const classes = [r.k];
-      if (r.n != null && cited.some(([a, b]) => r.n >= a && r.n <= b)) classes.push("cited");
+    state.blockRows = [...starts.keys()].filter((ri) => state.shownRows.has(ri)).sort((x, y) => x - y);
+
+    /* Row classes that depend on the head line number (or the row itself). */
+    const marks = (r, ri) => {
+      const out = [];
+      if (!r) return out;
+      if (r.n != null && cited.some(([a, b]) => r.n >= a && r.n <= b)) out.push("cited");
       if (selected && selected.file === view.path && r.n != null &&
-          r.n >= selected.line_start && r.n <= selected.line_end) classes.push("focus");
+          r.n >= selected.line_start && r.n <= selected.line_end) out.push("focus");
       if (state.pick && state.pick.path === view.path && r.n != null &&
-          r.n >= state.pick.start && r.n <= state.pick.end) classes.push("picked");
-      if (walkRows.has(ri)) classes.push("walk-focus");
-      const dotCell = el("td", { class: "mark" });
-      for (const f of (r.n != null && dots.get(r.n)) || []) {
-        dotCell.appendChild(el("span", {
+          r.n >= state.pick.start && r.n <= state.pick.end) out.push("picked");
+      if (walkRows.has(ri)) out.push("walk-focus");
+      return out;
+    };
+    const dotCell = (r) => {
+      const td = el("td", { class: "dots" });
+      for (const f of (r && r.n != null && dots.get(r.n)) || []) {
+        td.appendChild(el("span", {
           class: "dot " + f.severity, title: f.severity + ": " + f.claim,
           onclick: () => selectFinding(f.id),
         }));
       }
-      const src = el("td", { class: "src" });
-      src.innerHTML = rowHtml[ri];
-      tbody.appendChild(el("tr", { class: classes.join(" "), "data-ri": String(ri),
-        "data-n": r.n == null ? null : String(r.n), "data-o": r.o == null ? null : String(r.o) }, [
-        dotCell,
-        el("td", { class: "ln", text: r.o == null ? "" : String(r.o) }),
-        el("td", { class: "ln new", text: r.n == null ? "" : String(r.n) }),
-        el("td", { class: "mark" }),
-        src,
-      ]));
+      return td;
+    };
+    const cols = state.split ? 7 : 5;
+    const tbody = el("tbody");
+    if (!state.split) {
+      for (const it of items) {
+        if (it.fold) {
+          tbody.appendChild(foldRow(view, it.fold, cols));
+          continue;
+        }
+        const ri = it.row;
+        const r = view.rows[ri];
+        if (starts.has(ri)) tbody.appendChild(blockHead(view.path, starts.get(ri), explained, cols));
+        const src = el("td", { class: "src" });
+        src.innerHTML = rowHtml[ri];
+        tbody.appendChild(el("tr", { class: [r.k].concat(marks(r, ri)).join(" "), "data-ri": String(ri),
+          "data-n": r.n == null ? null : String(r.n), "data-o": r.o == null ? null : String(r.o) }, [
+          dotCell(r),
+          el("td", { class: "ln", text: oldNum[ri] == null ? "" : String(oldNum[ri]) }),
+          el("td", { class: "ln new", text: r.n == null ? "" : String(r.n) }),
+          el("td", { class: "mark" }),
+          src,
+        ]));
+      }
+    } else {
+      const side = (r) => (!r ? " none" : r.k === "del" ? " del" : r.k === "add" ? " add" : "");
+      const srcCell = (r, ri, which) => {
+        const td = el("td", { class: "src " + which + side(r),
+          "data-ri": r && (r.k === "add" || r.k === "del") ? String(ri) : null });
+        if (r) td.innerHTML = rowHtml[ri];
+        return td;
+      };
+      for (const line of L.splitLines(view.rows, items)) {
+        if (line.fold) {
+          tbody.appendChild(foldRow(view, line.fold, cols));
+          continue;
+        }
+        if (line.gap != null) {
+          tbody.appendChild(el("tr", { class: "gap", "data-ri": String(line.gap) },
+            [el("td", { colspan: String(cols), text: view.rows[line.gap].t })]));
+          continue;
+        }
+        const li = line.left;
+        const ri = line.right;
+        const lr = li != null ? view.rows[li] : null;
+        const rr = ri != null ? view.rows[ri] : null;
+        const first = Math.min(li == null ? Infinity : li, ri == null ? Infinity : ri);
+        if (starts.has(first)) tbody.appendChild(blockHead(view.path, starts.get(first), explained, cols));
+        const kind = li === ri ? "ctx" : "chg";
+        tbody.appendChild(el("tr", { class: [kind].concat(marks(rr, ri), rr ? [] : marks(lr, li)).join(" "),
+          "data-ri": String(ri != null ? ri : li), "data-ril": li != null && li !== ri ? String(li) : null,
+          "data-n": rr && rr.n != null ? String(rr.n) : null, "data-o": lr && lr.o != null ? String(lr.o) : null }, [
+          dotCell(rr),
+          el("td", { class: "ln" + side(lr), text: lr && oldNum[li] != null ? String(oldNum[li]) : "" }),
+          el("td", { class: "mark" + side(lr) }),
+          srcCell(lr, li, "left"),
+          el("td", { class: "ln new" + side(rr), text: rr && rr.n != null ? String(rr.n) : "" }),
+          el("td", { class: "mark" + side(rr) }),
+          srcCell(rr, ri, "right"),
+        ]));
+      }
     }
-    code.replaceChildren(fileNav(-1), el("table", {}, [tbody]), fileNav(1));
+    code.replaceChildren(el("table", {}, [tbody]));
+    state.rowEls = [...code.querySelectorAll("tr[data-ri]")];
+    updateBlockLine();
+  }
+
+  // --- where am I in the file: the enclosing scope and the change count ---------
+
+  /* The row index under a point `offset` px below the top of the code pane. */
+  function rowAt(offset) {
+    const rows = state.rowEls || [];
+    if (!rows.length) return null;
+    const y = $("code").getBoundingClientRect().top + offset;
+    let lo = 0;
+    let hi = rows.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (rows[mid].getBoundingClientRect().bottom <= y) lo = mid + 1;
+      else hi = mid;
+    }
+    return Number(rows[lo].getAttribute("data-ri"));
+  }
+
+  /* The reference line sits a little below the top, where a change that was
+   * jumped to lands (see moveBlock). */
+  const REF_OFFSET = 72;
+
+  function updateBlockLine() {
+    const view = state.view;
+    const starts = state.blockRows || [];
+    const ri = view && !view.binary ? rowAt(REF_OFFSET) : null;
+    let k = 0;
+    if (ri != null) for (const s of starts) if (s <= ri) k += 1;
+    const scope = ri != null ? L.enclosingScope(view.rows, ri) : null;
+    $("block-where").textContent = scope ? "in " + scope : "";
+    $("block-where").title = scope || "";
+    $("block-pos").textContent = !starts.length ? "no changes shown"
+      : k ? "change " + k + " of " + starts.length : starts.length + " change" + (starts.length === 1 ? "" : "s");
+    $("block-prev").disabled = ri == null || L.stepBlock(starts, ri, -1) < 0;
+    $("block-next").disabled = ri == null || L.stepBlock(starts, ri, 1) < 0;
+  }
+
+  function moveBlock(delta) {
+    const ri = rowAt(REF_OFFSET);
+    if (ri == null) return;
+    const idx = L.stepBlock(state.blockRows, ri, delta);
+    if (idx < 0) return;
+    const target = state.blockRows[idx];
+    const tr = rowEl(target);
+    if (!tr) return;
+    const code = $("code");
+    const top = tr.getBoundingClientRect().top - code.getBoundingClientRect().top + code.scrollTop;
+    code.scrollTo({ top: Math.max(0, top - REF_OFFSET + 8), behavior: reducedMotion() ? "auto" : "smooth" });
+    tr.classList.remove("flash");
+    void tr.offsetWidth;
+    tr.classList.add("flash");
+  }
+
+  function reducedMotion() {
+    return !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  }
+
+  /* The table row showing row index `i` (in split view, either side). */
+  function rowEl(i) {
+    return $("code").querySelector('tr[data-ri="' + i + '"], tr[data-ril="' + i + '"]');
   }
 
   // --- explaining one block ------------------------------------------------------
@@ -1064,9 +1498,9 @@
 
   /* The row above a block of changed lines: a light-bulb button, or, once
    * asked, the session's explanation (a spinner until it arrives). */
-  function blockHead(path, range, explained) {
+  function blockHead(path, range, explained, cols) {
     const q = explained.get(L.blockKey(range));
-    const td = el("td", { colspan: "5" });
+    const td = el("td", { colspan: String(cols) });
     if (!q) {
       td.appendChild(el("button", {
         class: "bulb", title: "Ask " + (state.who ? state.who.agent : "the session") + " to explain " + L.formatRef(path, range),
@@ -1085,7 +1519,7 @@
         el("span", { class: "strip-icon", text: "💡" }),
         body,
         el("button", { class: "cite-link strip-more", title: "Put this block into the question box",
-          text: "Follow up", onclick: () => insertRef(path, range) }),
+          text: "Follow up", onclick: () => insertRef(path, range, { open: true }) }),
       ]));
     }
     return el("tr", { class: "block-head" }, [td]);
@@ -1099,7 +1533,7 @@
       redrawCode();
       schedulePoll(0);
     } catch (err) {
-      showBanner("Could not ask for an explanation: " + err.message);
+      showToast("Could not ask for an explanation: " + err.message);
     }
   }
 
@@ -1131,7 +1565,7 @@
     return "⋯ " + lines + " unchanged (" + count + ")";
   }
 
-  function foldRow(view, fold) {
+  function foldRow(view, fold, cols) {
     const count = fold[1] - fold[0] + 1;
     const expand = (how) => {
       const open = openRows(view.path);
@@ -1147,63 +1581,45 @@
     }
     buttons.push(el("button", { class: "fold-btn", text: "Show all", onclick: () => expand("all") }));
     return el("tr", { class: "fold" }, [
-      el("td", { colspan: "5" }, [el("span", { class: "fold-label", text: foldLabel(view, fold) }), ...buttons]),
+      el("td", { colspan: String(cols) }, [el("span", { class: "fold-label", text: foldLabel(view, fold) }), ...buttons]),
     ]);
   }
 
   // --- moving between files --------------------------------------------------
 
-  function neighbour(delta) {
-    const order = L.fileOrder(state.detail.files, state.fileFilter);
-    return L.neighbourFile(order, state.filePath, delta);
+  function navContext() {
+    return L.navFiles(state.tab === "walk" ? currentStep() : null, state.detail.files,
+      state.fileFilter, state.filePath);
   }
 
-  /* The bar above (delta -1) or below (delta 1) a file, naming the file
-   * that scrolling on past this edge opens. */
-  function fileNav(delta) {
-    const path = neighbour(delta);
-    const box = el("div", { class: "file-nav " + (delta > 0 ? "next" : "prev") });
-    if (!path) {
-      if (delta > 0) box.appendChild(el("span", { class: "muted", text: "End of the last changed file." }));
-      return box;
+  /* Prev / Next beside the file name. */
+  function renderFileNav() {
+    const nav = navContext();
+    const i = nav.order.indexOf(state.filePath);
+    const where = nav.inStep ? " file in this review" : " file";
+    for (const [id, d] of [["file-prev", -1], ["file-next", 1]]) {
+      const path = i < 0 ? null : nav.order[i + d];
+      const btn = $(id);
+      btn.disabled = !path;
+      btn.title = path ? (d < 0 ? "Previous" : "Next") + where + ": " + path
+        : "No " + (d < 0 ? "previous" : "next") + where;
     }
-    const name = path.slice(path.lastIndexOf("/") + 1);
-    box.appendChild(el("button", {
-      class: "file-nav-btn", title: path,
-      text: delta > 0 ? "Keep scrolling for the next file: " + name + " ▼" : "▲ Previous file: " + name,
-      onclick: () => goFile(delta),
-    }));
-    box.appendChild(el("div", { class: "overscroll-bar" }));
-    return box;
+    $("file-pos").textContent = i < 0 ? "" : (i + 1) + " of " + nav.order.length + (nav.inStep ? " in this review" : "");
   }
 
   async function goFile(delta) {
-    const path = neighbour(delta);
+    const nav = navContext();
+    const path = L.neighbourFile(nav.order, state.filePath, delta);
     if (!path) return;
     clearPickState();
+    if (nav.inStep) {
+      // Stay on the same review step: open the file at its first anchor there.
+      await openAnchor(currentStep().anchors.find((a) => a.path === path));
+      return;
+    }
     await openFile(path);
     if (state.tab === "walk") await showFileReview(path);
-    const code = $("code");
-    code.scrollTop = delta > 0 ? 0 : code.scrollHeight;
-  }
-
-  function showOverscroll(dir, progress) {
-    for (const bar of $("code").querySelectorAll(".overscroll-bar")) bar.style.width = "0";
-    if (!dir) return;
-    const bar = $("code").querySelector(".file-nav." + (dir > 0 ? "next" : "prev") + " .overscroll-bar");
-    if (bar) bar.style.width = Math.round(Math.min(1, progress) * 100) + "%";
-  }
-
-  function onCodeWheel(ev) {
-    if (!state.view || ev.ctrlKey) return;
-    const code = $("code");
-    const atTop = code.scrollTop <= 0;
-    const atBottom = code.scrollTop + code.clientHeight >= code.scrollHeight - 1;
-    const edge = ev.deltaY > 0 && atBottom ? 1 : ev.deltaY < 0 && atTop ? -1 : 0;
-    const res = L.overscroll(state.overscroll, edge, ev.deltaY, performance.now());
-    state.overscroll = res.acc;
-    showOverscroll(res.move ? 0 : res.acc.dir, res.progress || 0);
-    if (res.move) goFile(ev.deltaY > 0 ? 1 : -1);
+    $("code").scrollTop = 0;
   }
 
   function scrollToLines(start, end) {
@@ -1219,11 +1635,10 @@
       for (const i of idx) for (let j = i - FOLD_CONTEXT; j <= i + FOLD_CONTEXT; j++) open.add(j);
       renderCode();
     }
-    const code = $("code");
-    const first = code.querySelector('tr[data-ri="' + idx[0] + '"]');
+    const first = rowEl(idx[0]);
     if (first) first.scrollIntoView({ block: "center" });
     for (const i of idx) {
-      const tr = code.querySelector('tr[data-ri="' + i + '"]');
+      const tr = rowEl(i);
       if (!tr) continue;
       tr.classList.remove("flash");
       void tr.offsetWidth;  // restart the animation
@@ -1278,10 +1693,10 @@
     if (!cell) {
       // A click (not a drag) on an added or deleted row puts its whole
       // contiguous block into the question.
-      const tr = ev.target.closest("tr.add[data-ri], tr.del[data-ri]");
+      const hit = ev.target.closest("tr.add[data-ri], tr.del[data-ri], td.src.add[data-ri], td.src.del[data-ri]");
       const sel = window.getSelection();
-      if (!tr || ev.target.closest(".dot, button") || (sel && !sel.isCollapsed)) return;
-      const block = L.diffBlock(state.view.rows, Number(tr.getAttribute("data-ri")));
+      if (!hit || ev.target.closest(".dot, button") || (sel && !sel.isCollapsed)) return;
+      const block = L.diffBlock(state.view.rows, Number(hit.getAttribute("data-ri")));
       if (block) insertRef(state.view.path, block);
       return;
     }
@@ -1293,41 +1708,45 @@
 
   function askAboutPick() {
     if (!state.pick) return;
-    insertRef(state.pick.path, { side: "head", line_start: state.pick.start, line_end: state.pick.end });
+    insertRef(state.pick.path, { side: "head", line_start: state.pick.start, line_end: state.pick.end }, { open: true });
     $("ask-lines").hidden = true;
   }
 
   // --- the question box (footer) ---------------------------------------------
 
-  /* Say so when a message will be filed under the open review or finding
-   * (the chat labels it that way); say nothing otherwise, including when
-   * the text holds @references, which speak for themselves. */
+  /* What the next message is filed under, the same way send() decides:
+   * @lines typed in it, else the open review step, else the open finding,
+   * else the whole change. */
   function renderAskAbout() {
     const box = $("ask-about");
     if (!box || !state.detail) return;
     const anchor = L.refAnchor(L.parseRefs($("question").value, state.detail.files));
     const f = state.selected && state.findingsById.get(state.selected);
     const step = askingAboutStep() ? currentStep() : null;
-    box.textContent = anchor ? ""
-      : step ? "Asking about the open review: " + step.title
-        : state.tab === "finding" && f ? "Asking about the open finding: " + f.claim : "";
-    box.title = box.textContent
-      ? "The session answers with this in mind. Type @ to ask about a file instead." : "";
+    const what = anchor ? L.walkAnchorLabel(anchor)
+      : step ? step.title
+        : state.tab === "finding" && f ? f.claim : "the whole change";
+    box.replaceChildren(el("span", { class: "muted", text: "Context: " }), what);
+    box.title = "Context: " + what + ". Type @ to point at a file and lines instead.";
   }
 
   /* Put "@path:lines" into the question at the caret, with spaces around it. */
-  function insertRef(path, ref) {
+  /* Adds a line reference to the message. With the chat closed it stays
+   * closed (more lines can be picked; the button shows the unsent message)
+   * unless `open` is asked for. */
+  function insertRef(path, ref, opts) {
     const box = $("question");
     const at = document.activeElement === box ? box.selectionStart : null;
     const merged = L.mergeRef(box.value, state.detail.files, path, ref, at);
     box.value = merged.text;
-    const caret = merged.caret;
-    if (document.activeElement !== box) state.quietFocus = true;
-    box.focus();
-    state.quietFocus = false;  // focusin already ran, or never will (window not focused)
-    box.setSelectionRange(caret, caret);
+    if (opts && opts.open) setChatOpen(true);
+    if (state.chatOpen) {
+      box.focus();
+      box.setSelectionRange(merged.caret, merged.caret);
+    }
     closeAc();
     renderAskAbout();
+    renderFab();
   }
 
   function closeAc() {
@@ -1404,6 +1823,110 @@
     if (ev.key === "Enter" && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); send(); }
   }
 
+  // --- Go to (Ctrl+K) -------------------------------------------------------------
+
+  function paletteEntries() {
+    const out = [];
+    for (const path of state.detail.files) {
+      const cut = path.lastIndexOf("/");
+      out.push({ kind: "file", label: path.slice(cut + 1), sub: cut > 0 ? path.slice(0, cut) : "", path: path });
+    }
+    ((state.walk && state.walk.steps) || []).forEach((st, i) => {
+      out.push({ kind: "review", label: st.title, sub: "review " + (i + 1), step: st.id });
+    });
+    for (const f of state.detail.findings.findings) {
+      if (!state.showHidden && L.isHidden(f, state.detail.decisions)) continue;
+      out.push({ kind: f.severity, label: f.claim, sub: f.file + ":" + f.line_start, finding: f.id });
+    }
+    return out;
+  }
+
+  function renderPalette() {
+    const list = $("palette-list");
+    list.replaceChildren();
+    const pal = state.palette;
+    pal.items = L.paletteMatch(paletteEntries(), $("palette-input").value, 50);
+    pal.index = Math.min(pal.index, Math.max(0, pal.items.length - 1));
+    if (!pal.items.length) list.appendChild(el("li", { class: "none", text: "Nothing matches." }));
+    pal.items.forEach((it, i) => {
+      list.appendChild(el("li", {
+        id: "pal-" + i, role: "option", class: i === pal.index ? "active" : "", "aria-selected": String(i === pal.index),
+        onmousedown: (ev) => { ev.preventDefault(); pickPalette(i); },
+        onmousemove: () => { if (pal.index !== i) { pal.index = i; markPalette(); } },
+      }, [
+        el("span", { class: "kind " + it.kind, text: it.kind === "file" ? "file" : it.kind === "review" ? "review" : it.kind.toLowerCase() }),
+        el("span", { class: "label", text: it.label }),
+        it.sub ? el("span", { class: "sub", text: it.sub }) : null,
+      ]));
+    });
+    markPalette();
+  }
+
+  function markPalette() {
+    const list = $("palette-list");
+    list.querySelectorAll("li[role=option]").forEach((li, i) => {
+      const on = i === state.palette.index;
+      li.classList.toggle("active", on);
+      li.setAttribute("aria-selected", String(on));
+      if (on) li.scrollIntoView({ block: "nearest" });
+    });
+    $("palette-input").setAttribute("aria-activedescendant", "pal-" + state.palette.index);
+  }
+
+  function openPalette() {
+    if (!state.detail) return;
+    const dlg = $("palette");
+    if (dlg.open) return;
+    if ($("help").open) $("help").close();
+    $("palette-input").value = "";
+    state.palette.index = 0;
+    renderPalette();
+    dlg.showModal();
+    $("palette-input").focus();
+  }
+
+  async function pickPalette(i) {
+    const it = state.palette.items[i];
+    $("palette").close();
+    if (!it) return;
+    if (it.path) { clearPick(); await openFile(it.path); await showFileReview(it.path); }
+    else if (it.step) { state.tabChosen = true; await selectStep(it.step, { open: true }); }
+    else if (it.finding) { setTab("finding"); await selectFinding(it.finding); }
+  }
+
+  function onPaletteKey(ev) {
+    const pal = state.palette;
+    const n = pal.items.length;
+    if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+      ev.preventDefault();
+      if (n) pal.index = (pal.index + (ev.key === "ArrowDown" ? 1 : n - 1)) % n;
+      markPalette();
+    } else if (ev.key === "Enter") {
+      ev.preventDefault();
+      pickPalette(pal.index);
+    }
+  }
+
+  // --- shortcuts ---------------------------------------------------------------
+
+  function setSplit(on) {
+    state.split = on;
+    prefs.save(SPLIT_KEY, on ? "1" : "0");
+    if (state.view) redrawCode();
+  }
+
+  function setWrap(on) {
+    state.wrap = on;
+    prefs.save(WRAP_KEY, on ? "1" : "0");
+    if (state.view) redrawCode();
+  }
+
+  function toggleHelp() {
+    const dlg = $("help");
+    if (dlg.open) dlg.close();
+    else dlg.showModal();
+  }
+
   // --- events ------------------------------------------------------------------
 
   function bindEvents() {
@@ -1414,9 +1937,6 @@
     $("question").addEventListener("input", () => { updateAc(); renderAskAbout(); });
     $("question").addEventListener("click", updateAc);
     $("question").addEventListener("blur", () => setTimeout(closeAc, 100));
-    for (const b of document.querySelectorAll("[data-decision]")) {
-      b.addEventListener("click", () => decide(b.getAttribute("data-decision")));
-    }
     $("show-hidden").addEventListener("change", (ev) => {
       state.showHidden = ev.target.checked;
       renderFindingList();
@@ -1427,23 +1947,64 @@
       renderFiles();
     });
     $("code").addEventListener("mouseup", onCodeMouseUp);
-    $("code").addEventListener("wheel", onCodeWheel, { passive: true });
+    $("file-prev").addEventListener("click", () => goFile(-1));
+    const code = $("code");
+    const setCodeWidth = () => code.style.setProperty("--code-w", code.clientWidth + "px");
+    setCodeWidth();
+    new ResizeObserver(setCodeWidth).observe(code);
+    window.addEventListener("resize", setCodeWidth);
+    $("file-next").addEventListener("click", () => goFile(1));
     $("code").addEventListener("click", onCodeClick);
     $("ask-lines").addEventListener("click", askAboutPick);
     $("tab-finding").addEventListener("click", () => setTab("finding"));
     $("tab-summary").addEventListener("click", () => setTab("summary"));
     $("tab-walk").addEventListener("click", () => setTab("walk"));
+    $("help-btn").addEventListener("click", toggleHelp);
+    $("palette-input").addEventListener("input", () => { state.palette.index = 0; renderPalette(); });
+    $("palette-input").addEventListener("keydown", onPaletteKey);
+    $("palette").addEventListener("click", (ev) => { if (ev.target === $("palette")) $("palette").close(); });
+    $("file-viewed").addEventListener("change", (ev) => { if (state.view) setViewed(state.view.path, ev.target.checked); });
+    $("layout-unified").addEventListener("click", () => setSplit(false));
+    $("layout-split").addEventListener("click", () => setSplit(true));
+    $("wrap-btn").addEventListener("click", () => setWrap(!state.wrap));
+    $("block-prev").addEventListener("click", () => moveBlock(-1));
+    $("block-next").addEventListener("click", () => moveBlock(1));
+    let scrollQueued = false;
+    $("code").addEventListener("scroll", () => {
+      if (scrollQueued) return;
+      scrollQueued = true;
+      requestAnimationFrame(() => { scrollQueued = false; updateBlockLine(); });
+    }, { passive: true });
+    $("help-close").addEventListener("click", () => $("help").close());
+    // A click on the backdrop lands on the dialog itself, outside its content.
+    $("help").addEventListener("click", (ev) => { if (ev.target === $("help")) $("help").close(); });
     document.addEventListener("keydown", (ev) => {
+      if ((ev.ctrlKey || ev.metaKey) && !ev.shiftKey && ev.code === "KeyB") {
+        ev.preventDefault();
+        togglePanel(ev.altKey ? "detail" : "side");
+        return;
+      }
+      if ((ev.ctrlKey || ev.metaKey) && !ev.altKey && !ev.shiftKey && (ev.key === "k" || ev.key === "K")) {
+        ev.preventDefault();
+        if ($("palette").open) $("palette").close();
+        else openPalette();
+        return;
+      }
+      if ($("palette").open) return;
+      if ($("help").open) {
+        if (ev.key === "?") { ev.preventDefault(); toggleHelp(); }
+        return;  // Esc closes the dialog natively
+      }
       const typing = ev.target.closest && ev.target.closest("input, textarea, select");
       if (ev.key === "Escape") {
         if (typing) ev.target.blur();
+        if (state.chatOpen && !state.pick) setChatOpen(false);
         clearPick();
         return;
       }
       if (typing || ev.metaKey || ev.ctrlKey || ev.altKey) return;
       if (ev.key === "j" || ev.key === "k") {
-        const order = L.findingOrder(L.groupFindings(state.detail.findings.findings,
-          state.detail.decisions, state.showHidden));
+        const order = L.findingOrder(L.groupFindings(state.detail.findings.findings, state.detail.decisions, state.showHidden));
         const next = L.stepFinding(order, state.selected, ev.key === "j" ? 1 : -1);
         if (state.tab !== "finding") setTab("finding");
         if (next && next !== state.selected) selectFinding(next);
@@ -1453,11 +2014,25 @@
       } else if (ev.key === "/") {
         ev.preventDefault();
         $("file-search").focus();
+      } else if (ev.key === "?") {
+        ev.preventDefault();
+        toggleHelp();
+      } else if (ev.key === "n" || ev.key === "p") {
+        moveBlock(ev.key === "n" ? 1 : -1);
+      } else if (ev.key === "v") {
+        if (state.view) setViewed(state.view.path, !isViewed(state.view.path));
+      } else if (ev.key === "s") {
+        setSplit(!state.split);
+      } else if (ev.key === "w") {
+        setWrap(!state.wrap);
+      } else if (ev.key === "c") {
+        ev.preventDefault();
+        setChatOpen(!state.chatOpen);
       }
     });
   }
 
   document.addEventListener("DOMContentLoaded", () => {
-    boot().catch((err) => showBanner("The viewer could not load: " + err.message));
+    boot().catch((err) => showToast("The viewer could not load: " + err.message));
   });
 })();
