@@ -27,8 +27,9 @@ DIMENSION_TASKS = {
         "as a second citation."
     ),
     "tests": (
-        "Find what the change's tests cover and what they leave untested. Report an untested path "
-        "only when you can name a concrete input that fails on it."
+        "Find changed behaviour that no test would catch breaking. Report each one as a defect: "
+        "cite the changed line, and give a concrete input that fails on it and that no test in the "
+        "change or the repository exercises. Do not describe what the tests cover."
     ),
 }
 
@@ -49,7 +50,9 @@ SCHEMA = """\
 
 def build(target: TargetInfo, dimension: str, diff: str, conventions: str = "") -> str:
     parts = [
-        f"You are one reviewer in a code review, looking at one aspect: {dimension}.",
+        f"You are one reviewer in a code review, looking at one aspect: {dimension}. Your final "
+        f"message is one JSON object listing defects (schema at the end), read by a program; it is "
+        f"not a report.",
         workspace_block(target),
         DIMENSION_TASKS[dimension],
         commits_block(target),

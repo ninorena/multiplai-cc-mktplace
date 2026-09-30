@@ -8,9 +8,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import KEYWORD_CITATION, SCHEMA, high_finding
+from conftest import DEF_CITATION, KEYWORD_CITATION, SCHEMA, high_finding
 from review_pipeline import budget, sdk
 from review_pipeline.__main__ import main
+from review_pipeline.config import DIMENSIONS
 from review_pipeline.models import DuplicateSet, FinderOutput, MergeOutput, ReviewState, Verdict
 
 
@@ -20,18 +21,33 @@ def reworded_finding():
                                         severity="MEDIUM", dimension="callers", finder="callers")
 
 
-class FakeAgents:
-    """Canned answers by stage label. `kill_at` raises once at that stage."""
+def settings_findings():
+    """Two findings on one line of settings.py: a second group for the merge stage."""
+    return [high_finding().with_location(claim=claim, file="settings.py", line_start=3, line_end=3,
+                                          citations=[DEF_CITATION.model_dump()], finder="history")
+            for claim in ("The OTA name default is hardcoded", "The OTA name is read without validation")]
 
-    def __init__(self, kill_at: str | None = None, cost: float = 0.0):
+
+class FakeAgents:
+    """Canned answers by stage label. `kill_at` raises once at that stage;
+    `budget_stop_at` raises BudgetExceededError once, on that call (1-based).
+    `two_groups` adds two overlapping settings.py findings from `history`."""
+
+    def __init__(self, kill_at: str | None = None, cost: float = 0.0, budget_stop_at: int | None = None,
+                 two_groups: bool = False):
         self.calls: list[str] = []
         self.kill_at = kill_at
         self.cost = cost
+        self.budget_stop_at = budget_stop_at
+        self.two_groups = two_groups
 
     async def __call__(self, prompt, schema, *, budget_label="", **kwargs):
         sdk.require_trusted_repo()
         budget.check(stage=budget_label)
         self.calls.append(budget_label)
+        if len(self.calls) == self.budget_stop_at:
+            self.budget_stop_at = None
+            raise budget.BudgetExceededError(f"circuit breaker stopped the run during {budget_label}")
         if self.cost:
             budget.record(SimpleNamespace(cost_usd=self.cost), label=budget_label)
         stage = budget_label.split(":")[0]
@@ -42,6 +58,8 @@ class FakeAgents:
             return FinderOutput(findings=[high_finding()])
         if budget_label == "find:callers":
             return FinderOutput(findings=[reworded_finding()])
+        if budget_label == "find:history" and self.two_groups:
+            return FinderOutput(findings=settings_findings())
         if stage == "find":
             return FinderOutput()
         if stage == "verify":
@@ -177,6 +195,54 @@ def test_budget_breaker_stops_the_run_with_exit_4(fixture_repo, tmp_path, agents
     state = ReviewState.model_validate_json((target_dir / "review-state.json").read_text())
     assert state.budget["cost_usd"] >= 10 and not (target_dir / "findings.json").exists()
     assert "FAILED circuit breaker" in (target_dir / "progress.log").read_text()
+
+
+def _stop_then_resume(fixture_repo, tmp_path, agents, capsys, stop_at: int, **kwargs):
+    """Stop the review with a budget error on call *stop_at*, then resume it.
+
+    Returns (the state saved at the stop, the calls made before it, the calls the resume made)."""
+    repo, base, head = fixture_repo
+    out = tmp_path / "out"
+    fake = agents(budget_stop_at=stop_at, **kwargs)
+    assert main(_review_args(repo, base, head, out)) == 4
+    target_dir = out / f"booking-engine--{base}..{head}"
+    saved = ReviewState.model_validate_json((target_dir / "review-state.json").read_text())
+    before, first_run = fake.calls[:stop_at - 1], len(fake.calls)
+    capsys.readouterr()
+    assert main(["--session-id", "sess-test", "resume", str(target_dir), "--trust-repo"]) == 0
+    assert (target_dir / "findings.json").is_file()
+    return saved, before, fake.calls[first_run:]
+
+
+def test_a_budget_stop_during_find_keeps_finished_finders_and_resume_runs_the_rest(
+        fixture_repo, tmp_path, agents, capsys):
+    saved, before, resumed = _stop_then_resume(fixture_repo, tmp_path, agents, capsys, stop_at=3)
+    assert before == ["find:diff-bugs", "find:callers"]
+    # Which finders after the stopped one also finish depends on when the
+    # task group cancels them; the stopped one never has a result.
+    assert saved.stage == "target" and saved.findings == []
+    assert "history" not in saved.finder_results
+    assert [f.id for f in saved.finder_results["diff-bugs"].findings] == [high_finding().id]
+    missing = [f"find:{d}" for d in DIMENSIONS if d not in saved.finder_results]
+    assert resumed == missing + ["verify", "verify", "merge"]
+
+
+def test_a_budget_stop_during_verify_keeps_the_verdicts_and_resume_asks_only_the_rest(
+        fixture_repo, tmp_path, agents, capsys):
+    saved, before, resumed = _stop_then_resume(fixture_repo, tmp_path, agents, capsys, stop_at=7)
+    assert before[-1] == "verify" and len(before) == 6
+    assert saved.stage == "find" and list(saved.verdicts) == [high_finding().id]
+    assert resumed == ["verify", "merge"]
+
+
+def test_a_budget_stop_during_merge_keeps_the_answers_and_resume_asks_only_the_rest(
+        fixture_repo, tmp_path, agents, capsys):
+    # 5 finders, 4 verifiers, then one merge call per group: stop on the second.
+    saved, before, resumed = _stop_then_resume(fixture_repo, tmp_path, agents, capsys, stop_at=11,
+                                               two_groups=True)
+    assert before[-1] == "merge" and before.count("merge") == 1
+    assert saved.stage == "verify" and len(saved.merge_answers) == 1
+    assert resumed == ["merge"]
 
 
 def test_rollup_subcommand(fixture_repo, tmp_path, agents, capsys):

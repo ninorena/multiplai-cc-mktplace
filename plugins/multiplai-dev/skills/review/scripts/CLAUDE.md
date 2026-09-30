@@ -24,10 +24,10 @@ cd plugins/multiplai-dev/skills/review/scripts && \
 | `models.py` | Pipeline models. `Finding.citations` has `min_length=1`; `Finding.id` is computed with the v1 rule, never taken from a model. `Finding.finders` lists every finder that reported it. `STAGES` is the run order; `ReviewState` maps the removed `prescribe`/`check_fix` stages of an old checkpoint to `verify`. |
 | `target.py` | Resolves `--branch` / `--pr` / `--range` to shas, writes `diff.patch`, `commits.txt`, `files.txt`; `target_gate`; `snapshot_head()` (`git archive` of head into `<slug>/tree/`). Fixed argv, no shell, no checkout. |
 | `gates.py` | `citation_gate`, `finding_gate`, `verdict_gate`. Each takes `TargetInfo` and returns `GateResult`. |
-| `sdk.py` | `agent_call_structured`: trust gate, `Read`/`Grep`/`Glob` allow-list with its complement denied, one re-ask on a bad answer. The only caller of `run_agent`. |
+| `sdk.py` | `agent_call_structured`: trust gate, `Read`/`Grep`/`Glob` allow-list with its complement denied, one re-ask on a bad answer: a no-tools, one-turn reformat of the text returned, or a re-run of the prompt when the run itself failed. `parse_answer` says so when an answer holds no JSON at all. The only caller of `run_agent`. |
 | `budget.py` | Per-target ledger in a `ContextVar` (a batch runs targets concurrently) and the circuit breaker. |
 | `config.py` | `review.yaml` > `multiplai.conf` > session model, for per-stage models, effort, concurrency. |
-| `stages/` | `find`, `verify`, `merge`. Each `run_<stage>(state, ctx)` returns at once when the state is past it and skips items it already has. |
+| `stages/` | `find`, `verify`, `merge`. Each `run_<stage>(state, ctx)` returns at once when the state is past it and skips items it already has. Each stores an agent's answer in the state as it returns (`finder_results`, `verdicts`, `merge_answers`), so the checkpoint saved at a budget stop keeps it. |
 | `prompts/` | One module per stage; shared blocks in `__init__.py`. |
 | `export.py` | `ReviewState` → `findings.json` v1, key by key (the contract rejects unknown keys). Merged-away findings and `Finding.finders` are not exported; the v1 shape did not change for them. |
 | `render.py` | `review-<slug>.md`, the short `summary-<slug>.md` the session pastes into chat, and the `<SEV>-only.md` rollups, all from v1 dicts. |

@@ -66,14 +66,29 @@ def test_every_stage_gets_only_read_grep_glob():
         assert tools == ["Read", "Grep", "Glob"]
 
 
-async def test_one_reask_quotes_the_error(trusted, fake_run):
+async def test_an_unparsable_answer_is_reformatted_without_tools_not_rerun(trusted, fake_run):
     calls, replies = fake_run
     replies += [_result('{"value": "not a number"}'), _result('```json\n{"value": 7}\n```')]
-    out = await sdk.agent_call_structured("original", Answer, allowed_tools=sdk.VERIFIER_TOOLS)
+    out = await sdk.agent_call_structured("original", Answer, allowed_tools=sdk.VERIFIER_TOOLS,
+                                          max_turns=60, budget_label="verify")
     assert out.value == 7
     assert len(calls) == 2
-    assert calls[1]["prompt"].startswith("original")
-    assert "rejected by a program" in calls[1]["prompt"] and "value" in calls[1]["prompt"]
+    reformat = calls[1]
+    assert not reformat["prompt"].startswith("original") and "original" not in reformat["prompt"]
+    assert '<answer>\n{"value": "not a number"}\n</answer>' in reformat["prompt"]
+    assert "rejected" in reformat["prompt"] and '"value"' in reformat["prompt"]
+    assert reformat["allowed_tools"] == [] and reformat["max_turns"] == sdk.REFORMAT_MAX_TURNS
+    assert {"Read", "Grep", "Glob", "Bash"} <= set(reformat["disallowed_tools"])
+    assert reformat["label"] == "verify:reformat"
+
+
+def test_a_prose_answer_is_reported_as_having_no_json():
+    prose = "## Tests review\n\n| tier | covered |\n`{tier: 1, name: x}` then [\"merge\"]"
+    with pytest.raises(ValueError, match="contains no JSON object with the field.s. value; it starts: '## Tests"):
+        sdk.parse_answer(prose, Answer)
+    with pytest.raises(ValueError) as caught:  # JSON with the field keeps the parser's own error
+        sdk.parse_answer('{"value": "x"}', Answer)
+    assert "no JSON object" not in str(caught.value)
 
 
 async def test_second_failure_raises(trusted, fake_run):
@@ -92,6 +107,9 @@ async def test_failed_run_counts_as_a_failure_and_is_reasked(trusted, fake_run):
     replies += [err, _result(json.dumps({"value": 1}))]
     assert (await sdk.agent_call_structured("p", Answer, allowed_tools=sdk.MERGER_TOOLS)).value == 1
     assert len(calls) == 2
+    # No answer came back, so there is nothing to reformat: the prompt runs again.
+    assert calls[1]["prompt"].startswith("p\n\n---\n") and "boom" in calls[1]["prompt"]
+    assert calls[1]["allowed_tools"] == sdk.MERGER_TOOLS
 
 
 async def test_spend_is_recorded_and_the_breaker_stops_the_next_call(trusted, fake_run):

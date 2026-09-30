@@ -7,7 +7,7 @@ from pathlib import PurePosixPath
 
 from .. import sdk
 from ..gates import file_at_head, finding_gate
-from ..models import Finding, FinderOutput, Rejected, ReviewState, TargetInfo
+from ..models import Finding, FinderOutput, FinderResult, Rejected, ReviewState, TargetInfo
 from ..prompts import find as prompt
 from . import RunContext, bounded, fix_citation, relative_path
 
@@ -58,9 +58,9 @@ async def run_find(state: ReviewState, ctx: RunContext) -> ReviewState:
         return state
     target, cfg = state.target, ctx.config
     conventions = conventions_chain(target) if "conventions" in cfg.dimensions else ""
-    failures: list[str] = []
+    todo = [d for d in cfg.dimensions if d not in state.finder_results]
 
-    async def one(dimension: str) -> list[Finding]:
+    async def _one(dimension: str) -> FinderResult:
         try:
             out = await sdk.agent_call_structured(
                 prompt.build(target, dimension, ctx.diff, conventions),
@@ -72,20 +72,30 @@ async def run_find(state: ReviewState, ctx: RunContext) -> ReviewState:
             raise
         except sdk.AgentCallError as e:
             log.error("finder %s failed for %s", dimension, target.slug, exc_info=True)
-            failures.append(f"finder {dimension}: {str(e).splitlines()[0][:200]}")
-            return []
+            return FinderResult(error=f"finder {dimension}: {str(e).splitlines()[0][:200]}")
         if ctx.progress:
             ctx.progress.line(f"  finder {dimension}: {len(out.findings)} findings")
-        return [_normalise(f, dimension, target, ctx) for f in out.findings]
+        return FinderResult(findings=[_normalise(f, dimension, target, ctx) for f in out.findings])
 
-    per_dimension = await bounded(cfg.dimensions, one, cfg.concurrency)
-    if failures and len(failures) == len(cfg.dimensions):
+    async def one(dimension: str) -> None:
+        # Stored as each finder returns: a budget stop mid-stage keeps what
+        # was already paid for, and the checkpoint saved then carries it.
+        state.finder_results[dimension] = await _one(dimension)
+
+    await bounded(todo, one, cfg.concurrency)
+
+    results = [state.finder_results[d] for d in cfg.dimensions]
+    failures = [r.error for r in results if r.error]
+    if len(failures) == len(results):
+        for d in cfg.dimensions:
+            del state.finder_results[d]  # a later run tries every finder again
         raise sdk.AgentCallError("every finder failed: " + "; ".join(failures))
 
     seen: dict[tuple[str, int, str], Finding] = {}
     kept: list[Finding] = []
-    for findings in per_dimension:
-        for finding in findings:
+    for result in results:
+        for finding in result.findings:
+            finding = finding.model_copy(deep=True)  # `finders` grows below; the stored result stays as returned
             key = dedupe_key(finding)
             if key in seen:
                 first = seen[key]
@@ -93,12 +103,12 @@ async def run_find(state: ReviewState, ctx: RunContext) -> ReviewState:
                     first.finders.append(finding.finder)
                 continue
             seen[key] = finding
-            result = finding_gate(target, finding)
-            if result.passed:
+            gate = finding_gate(target, finding)
+            if gate.passed:
                 kept.append(finding)
             else:
-                state.rejected.append(Rejected(finding=finding, reason=result.reason, stage="find"))
-                ctx.gate_reasons.append(result.reason)
+                state.rejected.append(Rejected(finding=finding, reason=gate.reason, stage="find"))
+                ctx.gate_reasons.append(gate.reason)
 
     state.findings = kept
     ctx.counts = {"found": len(kept) + len([r for r in state.rejected if r.stage == "find"]),

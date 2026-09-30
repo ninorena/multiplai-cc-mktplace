@@ -17,6 +17,23 @@ time, not derived from a tag.
 
 ## [Unreleased]
 
+## [0.22.1] - 2026-09-30
+
+### Fixed
+- review: when the cost limit stops a review during the find stage, the
+  findings from finders that already finished are now saved, and `resume` runs
+  only the finders that have none. Before, they were lost and `resume` paid for
+  every finder again (#251).
+- review: an agent answer that does not parse is now re-asked as a one-turn
+  reformat of that answer with no tools, not as a fresh run of the whole
+  prompt. A finder's re-ask no longer repeats the review and its cost (#253).
+- review: an answer with no JSON in it (a markdown report) now fails with
+  "the answer contains no JSON object", not a parse error about a brace in its
+  prose (#253).
+- review: the `tests` finder is asked for untested changed behaviour as
+  defects, not for a report on what the tests cover, and every finder is told
+  up front that its answer is one JSON object (#253).
+
 ## [0.22.0] - 2026-09-30
 
 ### Added

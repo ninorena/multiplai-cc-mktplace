@@ -96,7 +96,7 @@
       "name": "multiplai-dev",
       "source": "./plugins/multiplai-dev",
       "description": "Developer skill pack: spec-driven builds, executable plan authoring, refactoring, walkthroughs, e2e tests, cloud ops, skill authoring.",
-      "version": "0.22.0",
+      "version": "0.22.1",
       "author": {
         "name": "Spike",
         "email": "fsm@spikelab.org"

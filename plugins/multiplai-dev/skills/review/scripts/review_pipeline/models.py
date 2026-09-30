@@ -133,6 +133,12 @@ class Rejected(BaseModel):
     stage: str = "find"
 
 
+class FinderResult(BaseModel):
+    """One finder's normalised findings, before dedupe and the gates."""
+    findings: list[Finding] = Field(default_factory=list)
+    error: str = ""  # set when the finder failed; its findings are then empty
+
+
 class Merged(BaseModel):
     """A finding folded into another that describes the same defect."""
     finding: Finding
@@ -150,6 +156,9 @@ class ReviewState(BaseModel):
     # The merge agent's answer per group of overlapping findings, keyed by the
     # group's sorted ids, so a resumed merge stage asks no group twice.
     merge_answers: dict[str, list[DuplicateSet]] = Field(default_factory=dict)
+    # Each finder's result by dimension, stored as it returns, so a budget
+    # stop during find keeps it and a resumed find runs only the rest.
+    finder_results: dict[str, FinderResult] = Field(default_factory=dict)
     original_severity: dict[str, str] = Field(default_factory=dict)  # lowered findings only
     errors: list[str] = Field(default_factory=list)  # agent failures, shown in the review header
     budget: dict = Field(default_factory=dict)

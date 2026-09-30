@@ -4,6 +4,12 @@ Copies the pattern of buildme's `sdk.py`, not the module: a repo trust gate,
 an explicit allow-list with its complement as the deny-list, a validated
 pydantic answer, and exactly one re-ask when the answer does not parse.
 
+The re-ask for an answer that came back but does not parse is a reformat: a
+no-tools, one-turn call that turns the text already paid for into the schema.
+Re-running the whole prompt would repeat the review (a finder re-ask took 68
+turns and cost as much as the first attempt). A run that failed returned no
+text, so its re-ask re-runs the prompt.
+
 Every stage gets `Read`, `Grep` and `Glob` and nothing else, so the pipeline is
 read-only over the reviewed code by construction.
 """
@@ -28,6 +34,8 @@ T = TypeVar("T", bound=BaseModel)
 
 DEFAULT_CALL_TIMEOUT_S = 1200.0
 DEFAULT_MAX_TURNS = 60
+REFORMAT_MAX_TURNS = 1
+REFORMAT_MAX_ANSWER_CHARS = 60_000
 
 READ_ONLY_TOOLS = ["Read", "Grep", "Glob"]
 FINDER_TOOLS = VERIFIER_TOOLS = MERGER_TOOLS = READ_ONLY_TOOLS
@@ -89,7 +97,8 @@ def deny_list(prompt: str, allowed_tools: list[str]) -> list[str]:
 
 
 async def _run(prompt: str, *, allowed_tools: list[str], model: str | None, effort: str | None,
-               max_turns: int, cwd: str | None, call_timeout: float, budget_label: str) -> str:
+               max_turns: int, cwd: str | None, call_timeout: float, budget_label: str,
+               run_label: str = "") -> str:
     require_trusted_repo()
     budget.check(stage=budget_label)
     try:
@@ -102,7 +111,7 @@ async def _run(prompt: str, *, allowed_tools: list[str], model: str | None, effo
             effort=effort,
             cwd=cwd,
             timeout_s=call_timeout,
-            label=budget_label or "review",
+            label=run_label or budget_label or "review",
             component="review",
         )
     except AgentRunError as e:
@@ -113,6 +122,39 @@ async def _run(prompt: str, *, allowed_tools: list[str], model: str | None, effo
         raise AgentCallError(f"agent call failed ({kind})\n{e.stderr_tail}") from e
     budget.record(result.usage, label=budget_label)
     return result.text
+
+
+def parse_answer(text: str, schema: type[T]) -> T:
+    """*text* as *schema*. Raises ValueError or ValidationError.
+
+    An answer that names none of the schema's fields holds no JSON answer at
+    all (a markdown report, say). `extract_json` would still parse the first
+    brace in its prose, and the error would describe that fragment, so this
+    case gets its own message.
+    """
+    try:
+        return schema.model_validate(extract_json(text))
+    except (ValidationError, ValueError) as e:
+        if not any(f'"{name}"' in text for name in schema.model_fields):
+            start = " ".join(text.split())[:120]
+            raise ValueError(f"the answer contains no JSON object with the field(s) "
+                             f"{', '.join(schema.model_fields)}; it starts: {start!r}") from e
+        raise
+
+
+def reformat_prompt(text: str, schema: type[BaseModel], error: Exception) -> str:
+    if len(text) > REFORMAT_MAX_ANSWER_CHARS:
+        text = text[:REFORMAT_MAX_ANSWER_CHARS] + "\n[... answer cut ...]"
+    return (
+        "Another agent was asked for ONE JSON object matching the schema below. A program rejected "
+        f"its answer: {str(error)[:2000]}\n\n"
+        "Rewrite that answer as ONE JSON object matching the schema. Use only what the answer says: "
+        "copy every quote, path and line number exactly, and add nothing it does not state. Leave out "
+        "any item the answer cannot fill in; when it holds no item for a list, leave the list empty.\n\n"
+        f"Schema:\n{json.dumps(schema.model_json_schema(), indent=1)}\n\n"
+        f"<answer>\n{text}\n</answer>\n\n"
+        "Answer with ONE JSON object and nothing after it."
+    )
 
 
 async def agent_call_structured(
@@ -129,27 +171,37 @@ async def agent_call_structured(
 ) -> T:
     """Run an agent and parse its final message into *schema*.
 
-    A parse or validation failure gets one re-ask that quotes the error; a
-    second failure raises `AgentCallError`. A failed run (timeout, CLI error)
-    counts as a failure the same way.
+    A failure gets one re-ask; a second failure raises `AgentCallError`. An
+    answer that does not parse is re-asked as a reformat of that answer, with
+    no tools. A failed run (timeout, CLI error) re-runs the prompt with the
+    error appended.
     """
-    current = prompt
-    last_error: Exception | None = None
-    for attempt in (1, 2):
-        try:
-            text = await _run(current, allowed_tools=allowed_tools, model=model, effort=effort,
-                              max_turns=max_turns, cwd=cwd, call_timeout=call_timeout,
-                              budget_label=budget_label)
-            return schema.model_validate(extract_json(text))
-        except (ValidationError, ValueError, AgentCallError) as e:
-            if isinstance(e, RepoTrustError):
-                raise
-            last_error = e
-            log.warning("%s: answer unusable (attempt %d/2): %s", budget_label or "agent", attempt,
-                        str(e)[:500])
-            current = (
-                f"{prompt}\n\n---\nYour previous answer was rejected by a program: {str(e)[:2000]}\n"
+    name = budget_label or "agent"
+    common = dict(model=model, effort=effort, cwd=cwd, call_timeout=call_timeout, budget_label=budget_label)
+    text: str | None = None
+    try:
+        text = await _run(prompt, allowed_tools=allowed_tools, max_turns=max_turns, **common)
+        return parse_answer(text, schema)
+    except RepoTrustError:
+        raise
+    except (ValidationError, ValueError, AgentCallError) as e:
+        first_error = e
+        log.warning("%s: answer unusable (attempt 1/2): %s", name, str(e)[:500])
+
+    try:
+        if text is None:
+            retry = (
+                f"{prompt}\n\n---\nYour previous answer was rejected by a program: {str(first_error)[:2000]}\n"
                 f"Return ONLY one JSON object matching this schema:\n"
                 f"{json.dumps(schema.model_json_schema(), indent=1)}\n"
             )
-    raise AgentCallError(f"{budget_label or 'agent'}: no valid answer after a re-ask: {last_error}")
+            text = await _run(retry, allowed_tools=allowed_tools, max_turns=max_turns, **common)
+        else:
+            text = await _run(reformat_prompt(text, schema, first_error), allowed_tools=[],
+                              max_turns=REFORMAT_MAX_TURNS, run_label=f"{name}:reformat", **common)
+        return parse_answer(text, schema)
+    except RepoTrustError:
+        raise
+    except (ValidationError, ValueError, AgentCallError) as e:
+        log.warning("%s: answer unusable (attempt 2/2): %s", name, str(e)[:500])
+        raise AgentCallError(f"{name}: no valid answer after a re-ask: {e}") from e

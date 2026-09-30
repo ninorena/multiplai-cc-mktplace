@@ -9,7 +9,7 @@ import pytest
 from conftest import KEYWORD_CITATION, KEYWORD_USE_CITATION, cite, high_finding, medium_finding
 from review_pipeline import sdk
 from review_pipeline.config import ReviewConfig
-from review_pipeline.models import DuplicateSet, Finding, FinderOutput, MergeOutput, ReviewState, Verdict
+from review_pipeline.models import DuplicateSet, Finding, FinderOutput, FinderResult, MergeOutput, ReviewState, Verdict
 from review_pipeline.stages import RunContext
 from review_pipeline.stages.find import conventions_chain, run_find
 from review_pipeline.stages.merge import MERGE_LINE_GAP, group_key, overlap_groups, run_merge
@@ -84,6 +84,45 @@ async def test_trust_error_escapes(target_info, ctx, monkeypatch):
     use(monkeypatch, {"find:diff-bugs": [sdk.RepoTrustError("no")], "find:callers": [FinderOutput()]})
     with pytest.raises(sdk.RepoTrustError):
         await run_find(ReviewState(target=target_info), ctx)
+
+
+async def test_a_budget_stop_during_find_keeps_finished_finders_and_resume_runs_the_rest(
+        target_info, ctx, monkeypatch):
+    from review_pipeline import budget
+
+    ctx.config.concurrency = 1
+    state = ReviewState(target=target_info)
+    use(monkeypatch, {"find:diff-bugs": [FinderOutput(findings=[high_finding()])],
+                      "find:callers": [budget.BudgetExceededError("stop")]})
+    with pytest.raises(budget.BudgetExceededError):
+        await run_find(state, ctx)
+    assert state.stage == "target" and state.findings == []
+    assert list(state.finder_results) == ["diff-bugs"]
+    assert [f.id for f in state.finder_results["diff-bugs"].findings] == [high_finding().id]
+
+    canned = use(monkeypatch, {"find:callers": [FinderOutput(findings=[high_finding()])]})
+    state = await run_find(state, ctx)
+    assert [label for label, _ in canned.calls] == ["find:callers"]
+    assert [f.id for f in state.findings] == [high_finding().id]
+    assert state.findings[0].finders == ["diff-bugs", "callers"]
+    assert state.finder_results["diff-bugs"].findings[0].finders == ["diff-bugs"]
+
+
+async def test_a_failed_finder_is_not_asked_again_on_resume_unless_every_finder_failed(
+        target_info, ctx, monkeypatch):
+    state = ReviewState(target=target_info, finder_results={
+        "diff-bugs": FinderResult(error="finder diff-bugs: bad answer")})
+    canned = use(monkeypatch, {"find:callers": [FinderOutput()]})
+    state = await run_find(state, ctx)
+    assert [label for label, _ in canned.calls] == ["find:callers"]
+    assert state.errors == ["finder diff-bugs: bad answer"]
+
+    state = ReviewState(target=target_info, finder_results={
+        "diff-bugs": FinderResult(error="finder diff-bugs: bad answer")})
+    use(monkeypatch, {"find:callers": [sdk.AgentCallError("y")]})
+    with pytest.raises(sdk.AgentCallError, match="every finder failed"):
+        await run_find(state, ctx)
+    assert state.finder_results == {}  # the next run asks every finder again
 
 
 async def test_stage_already_done_makes_no_calls(target_info, ctx, monkeypatch):
