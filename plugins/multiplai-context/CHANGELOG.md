@@ -46,6 +46,12 @@ are the release dates recorded at the time, not derived from a tag.
   written, refuses an edit that would push a file past its `> Cap:`, and writes
   nothing for `later` or no tick. `no` moves to `archived/rejected.md`, and `yes`
   to `archived/applied.md`. The older whole-proposal `/dream` is unchanged.
+  When the same fact sits in two queues for different target files, each
+  entry gets a line in the review naming the other file ("Same fact, other file:
+  queued for X. Say yes to one only."), also when the twin is already applied.
+  It never merges across files, because a project fact and a general rule can
+  look alike and belong in different places. The match is word overlap, so a
+  differently worded twin can still be missed.
 
 ## [0.55.2] - 2026-09-28
 

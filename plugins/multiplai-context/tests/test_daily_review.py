@@ -758,3 +758,55 @@ import contextlib as _cl
 @_cl.contextmanager
 def _no_lock(f):
     yield False
+
+
+class TestTwinsUnderOtherTargets:
+    """One fact worded twice and aimed at two files. Real pair, 2026-09-30."""
+
+    A = ("dream-remember Step 5 states it deletes all learnings files used in the proposal "
+         "and that git history preserves them, but .multiplai/learnings/ is not a git repository, "
+         "so deleted entries are permanently lost")
+    B = ("`.multiplai/learnings/` is NOT a git repo, any claim that git history preserves deleted "
+         "learnings files there was false and has been removed from the codebase")
+
+    def _two(self, env):
+        dirs, store = env
+        put(dirs, "a.md", raw(("2026-09-30T10:00:00", "s1", [line(self.A, "CLAUDE.md", typ="CORRECTION")])))
+        put(dirs, "b.md", raw(("2026-09-30T11:00:00", "s2", [line(self.B, "technical-pref.md", typ="CORRECTION")])))
+        dr.ingest(store)
+        return dirs, store
+
+    def test_both_entries_stay_and_each_names_the_other_file(self, env):
+        dirs, store = self._two(env)
+        before = total_entries(store)
+        path, n = dr.build_review(store, dirs, today=TODAY)
+        text = path.read_text()
+        assert n == 2 and total_entries(store) == before
+        assert "Same fact, other file: queued for technical-pref.md." in text
+        assert "Same fact, other file: queued for CLAUDE.md." in text
+
+    def test_the_note_does_not_change_what_a_yes_applies(self, env):
+        dirs, store = self._two(env)
+        (dirs.memory / "CLAUDE.md").write_text("# c\n")
+        path, _ = dr.build_review(store, dirs, today=TODAY)
+        items = dr.parse_review(path.read_text())
+        assert {i.target for i in items} == {"CLAUDE.md", "technical-pref.md"}
+        assert all(i.add.startswith("- ") for i in items)
+
+    def test_an_entry_already_applied_elsewhere_is_named(self, env):
+        dirs, store = self._two(env)
+        e = store.queue("CLAUDE.md")[0]
+        store.move(e.key, store.queue_path("CLAUDE.md"), store.applied_path)
+        path, _ = dr.build_review(store, dirs, today=TODAY)
+        assert "already applied for CLAUDE.md" in path.read_text()
+
+    def test_unrelated_entries_get_no_note(self, env):
+        dirs, store = env
+        put(dirs, "a.md", raw(("2026-09-30T10:00:00", "s1", [line(word_salad(1), "me.md"), line(word_salad(2), "project.md")])))
+        dr.ingest(store)
+        path, _ = dr.build_review(store, dirs, today=TODAY)
+        assert "Same fact" not in path.read_text()
+
+    def test_the_same_target_is_not_a_twin(self):
+        a = dr.Entry(line="- x", meta={"key": "k1", "target": "me.md"})
+        assert not dr.is_twin(a, dr.Entry(line="- x", meta={"key": "k2", "target": "me.md"}))

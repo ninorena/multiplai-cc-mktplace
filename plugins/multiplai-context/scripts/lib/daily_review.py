@@ -56,6 +56,10 @@ RESERVE_DAYS = 90
 # nothing, because the merged entry keeps every wording.
 DUPLICATE_JACCARD = 0.33
 DUPLICATE_CONTAINMENT = 0.55
+# Looser than the merge test, because the cost is lower: a twin under another
+# target only adds a note to the review, it never merges or hides anything.
+TWIN_JACCARD = 0.28
+TWIN_CONTAINMENT = 0.5
 _STOP = frozenset(
     "the and for with that this from are was has have not but when into its their they "
     "been will also should which than then only each any all one use used using".split()
@@ -136,6 +140,17 @@ def is_duplicate(a: Entry, b: Entry) -> bool:
     both = len(ta & tb)
     return (both / len(ta | tb) >= DUPLICATE_JACCARD
             and both / min(len(ta), len(tb)) >= DUPLICATE_CONTAINMENT)
+
+
+def is_twin(a: Entry, b: Entry) -> bool:
+    """Likely the same fact, aimed at a different target file."""
+    if a.target == b.target:
+        return False
+    ta, tb = _tokens(a.description), _tokens(b.description)
+    if not ta or not tb:
+        return False
+    both = len(ta & tb)
+    return both / len(ta | tb) >= TWIN_JACCARD and both / min(len(ta), len(tb)) >= TWIN_CONTAINMENT
 
 
 def rank_sorted(entries: list[Entry]) -> list[Entry]:
@@ -291,6 +306,20 @@ class Store:
         found.meta.update(meta_updates)
         self.add(dest, found)
         self.remove(src, key)
+        return found
+
+    def twins(self, entry: Entry) -> list[tuple[str, str]]:
+        """(target, where) for each entry elsewhere that likely says the same thing.
+
+        Looks in every queue and in applied.md. Reads only; merges nothing.
+        """
+        found: list[tuple[str, str]] = []
+        places = [("queued", self.queue_path(t)) for t in self.queue_targets()]
+        places.append(("already applied", self.applied_path))
+        for where, path in places:
+            for e in self.read(path):
+                if is_twin(entry, e) and (e.target, where) not in found:
+                    found.append((e.target, where))
         return found
 
     def find_anywhere(self, entry: Entry) -> Path | None:
@@ -603,7 +632,8 @@ def _default_add(e: Entry) -> str:
 
 def render_review_block(n: int, e: Entry, dirs: Dirs, *, expected_hash: str | None = None,
                         changed_note: str = "", add: str | None = None,
-                        section: str | None = None) -> str:
+                        section: str | None = None,
+                        twins: list[tuple[str, str]] | None = None) -> str:
     tp = resolve_target(e.target, dirs)
     h = expected_hash if expected_hash is not None else (sha(tp) if tp else "unresolved")
     hdr = json.dumps({"key": e.key, "target": e.target, "hash": h}, sort_keys=True)
@@ -621,6 +651,7 @@ def render_review_block(n: int, e: Entry, dirs: Dirs, *, expected_hash: str | No
     if e.action:
         lines.append(f"Note (not written): {e.action}")
     lines += warn
+    lines += [f"Same fact, other file: {w} for {tg}. Say yes to one only." for tg, w in (twins or [])]
     if changed_note:
         lines.append(f"CHANGED: {changed_note}")
     lines += [
@@ -646,7 +677,7 @@ def build_review(store: Store, dirs: Dirs, *, today: str, per_file: int = PER_FI
     for target in store.queue_targets():
         for e in rank_sorted(store.queue(target))[:per_file]:
             n += 1
-            blocks.append(render_review_block(n, e, dirs))
+            blocks.append(render_review_block(n, e, dirs, twins=store.twins(e)))
     if not blocks:
         return None, 0
     head = (
