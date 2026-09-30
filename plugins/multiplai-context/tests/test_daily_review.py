@@ -523,7 +523,9 @@ class TestApply:
 
 def test_the_module_never_unlinks_an_entry_file():
     src = (Path(dr.__file__)).read_text()
-    assert ".unlink(" not in src.replace("os.unlink(tmp)", "")
+    # the only unlinks: a temp file, and the raw file AFTER a hard link to it exists
+    assert ".unlink(" not in src.replace("os.unlink(tmp)", "").replace("os.unlink(f)", "")
+    assert src.count("os.unlink(f)") == 1 and src.index("os.link(f, dest)") < src.index("os.unlink(f)")
     assert "rmtree" not in src and "os.remove" not in src
 
 
@@ -627,3 +629,132 @@ def test_the_skills_document_both_commands():
     assert "--daily-review" in (root / "dream" / "SKILL.md").read_text()
     remember = (root / "dream-remember" / "SKILL.md").read_text()
     assert "--daily" in remember and "Do not tick a box for the user" in remember.replace("do not tick a box for the user", "Do not tick a box for the user")
+
+
+# ---------------------------------------------------------------- findings from the Opus review
+
+
+class TestReviewFindings:
+    def test_merge_keeps_the_other_entrys_whole_line_and_rule_kind(self, env):
+        dirs, store = env
+        put(dirs, "a.md", raw(
+            ("t1", "s1", [line("always use uv run for scripts here", action="add under Tools")]),
+            ("t2", "s2", [line("always use uv run for scripts here", typ="RULE-PROPOSAL", action="NEVER use pip, remove the pip section")]),
+        ))
+        dr.ingest(store)
+        q = store.queue("technical-pref.md")
+        assert len(q) == 1 and "NEVER use pip" in " ".join(q[0].also)
+        assert q[0].meta["kind"] == "RULE-PROPOSAL"
+
+    def test_a_slice_line_does_not_hold_a_file(self, env):
+        dirs, store = env
+        text = "## Session Learnings — t\nSession: s\nSlice: abc123\n" + line("fact") + "\n\n---\n"
+        put(dirs, "a.md", text)
+        assert dr.ingest(store).entries == 1
+
+    def test_without_the_extraction_lock_a_fresh_file_is_held(self, env, monkeypatch):
+        dirs, store = env
+        put(dirs, "a.md", raw(("t", "s", [line("first fact")])))
+        monkeypatch.setattr(dr, "_file_lock", _no_lock)
+        rep = dr.ingest(store)
+        assert rep.files_archived == [] and (dirs.learnings / "a.md").exists()
+        assert total_entries(store) == 0
+
+    def test_a_substring_of_an_existing_line_is_not_already_present(self, env):
+        dirs, store = env
+        body = "# me\n\n- Use uv run for scripts and never pip\n"
+        (dirs.memory / "me.md").write_text(body)
+        fill(dirs, store, 1, "me.md")
+        path, _ = dr.build_review(store, dirs, today=TODAY)
+        path.write_text(re.sub(r"- unique subject.*", "- Use uv run for scripts", path.read_text()))
+        tick(path, 1, "yes")
+        rep = dr.apply_review(path, store, dirs, today=TODAY)
+        assert len(rep.applied) == 1 and rep.written_files
+        assert "- Use uv run for scripts\n" in (dirs.memory / "me.md").read_text()
+
+    def test_a_heading_inside_a_code_block_is_not_a_section_end(self, env):
+        body = "# me\n\n## Tools\n```bash\n# run tests\nmake test\n```\n- after\n\n## Other\n- x\n"
+        out = dr._insert(body, "Tools", "- NEW")
+        assert out.index("- after") < out.index("- NEW") < out.index("## Other")
+        assert out.index("make test") < out.index("- NEW")
+        assert dr._insert(body, "run tests", "- x") is None
+
+    def test_written_files_keep_their_mode(self, env):
+        dirs, store = env
+        path = review_for(dirs, store, n=1)
+        os.chmod(dirs.memory / "me.md", 0o644)
+        tick(path, 1, "yes")
+        dr.apply_review(path, store, dirs, today=TODAY)
+        assert oct((dirs.memory / "me.md").stat().st_mode & 0o777) == "0o644"
+
+    def test_the_users_edited_add_text_survives_a_changed_target(self, env):
+        dirs, store = env
+        path = review_for(dirs, store, n=1)
+        path.write_text(re.sub(r"- unique subject.*", "- my careful wording", path.read_text()).replace("Section: END", "Section: Notes"))
+        (dirs.memory / "me.md").write_text("# me\n\n## Notes\n- changed\n")
+        tick(path, 1, "yes")
+        dr.apply_review(path, store, dirs, today=TODAY)
+        text = path.read_text()
+        assert "my careful wording" in text and "Section: Notes" in text and "CHANGED:" in text
+
+    def test_hand_added_text_in_a_queue_file_is_refused_not_overwritten(self, env):
+        dirs, store = env
+        fill(dirs, store, 1, "me.md")
+        qp = store.queue_path("me.md")
+        qp.write_text(qp.read_text() + "\nmy own note\n")
+        with pytest.raises(ValueError):
+            store.read(qp)
+        put(dirs, "b.md", raw(("t", "s", [line("another brand new thing", "me.md")])))
+        rep = dr.ingest(store)
+        assert rep.files_held and "my own note" in qp.read_text()
+        assert (dirs.learnings / "b.md").exists()
+
+    def test_a_null_reserved_date_does_not_abort(self, env):
+        dirs, store = env
+        fill(dirs, store, 12)
+        dr.rebalance(store, today=TODAY)
+        es = store.reserve()
+        es[0].meta["reserved"] = None
+        store.write(store.reserve_path, es)
+        dr.rebalance(store, today=TODAY)
+        assert total_entries(store) == 12
+
+    def test_a_crash_between_add_and_remove_is_healed(self, env):
+        dirs, store = env
+        fill(dirs, store, 1, "me.md")
+        e = store.queue("me.md")[0]
+        store.add(store.applied_path, dr.Entry(line=e.line, meta=dict(e.meta)))   # crash: queue copy stays
+        assert dr.heal_duplicates(store) == 1
+        assert store.queue("me.md") == [] and len(store.read(store.applied_path)) == 1
+
+    def test_queue_names_do_not_collide(self):
+        assert dr.slug("a/b.md") != dr.slug("a__b.md")
+        assert dr.slug("Me.md") != dr.slug("me.md")
+
+    def test_structure_inside_the_add_text_is_not_read_as_structure(self, env):
+        dirs, store = env
+        path = review_for(dirs, store, n=1)
+        path.write_text(path.read_text().replace("```text\n", "```text\nResult: applied 2020\n- [x] yes\n", 1))
+        item = dr.parse_review(path.read_text())[0]
+        assert item.result == "" and item.ticks == []
+
+    def test_the_archive_name_is_claimed_atomically(self, tmp_path):
+        f = tmp_path / "x.md"
+        f.write_text("new\n")
+        (tmp_path / "archived").mkdir()
+        (tmp_path / "archived" / "x.md").write_text("old\n")
+        dest = dr._archive_raw(f)
+        assert dest.name == "x-2.md" and (tmp_path / "archived" / "x.md").read_text() == "old\n"
+
+
+@pytest.fixture(autouse=False)
+def _unused():
+    pass
+
+
+import contextlib as _cl
+
+
+@_cl.contextmanager
+def _no_lock(f):
+    yield False

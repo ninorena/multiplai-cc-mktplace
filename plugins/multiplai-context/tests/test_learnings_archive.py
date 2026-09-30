@@ -59,7 +59,7 @@ class TestGcMovesInsteadOfDeleting:
         def boom(*a, **k):
             raise PermissionError("nope")
 
-        monkeypatch.setattr(os, "rename", boom)
+        monkeypatch.setattr(os, "link", boom)
 
         gc_env["dream"]._gc_learnings()
 

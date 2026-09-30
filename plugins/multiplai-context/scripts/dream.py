@@ -3067,14 +3067,18 @@ def _archive_learning(f: Path) -> Path:
     """
     dest_dir = f.parent / "archived"
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / f.name
-    n = 2
-    while dest.exists():
-        dest = dest_dir / f"{f.stem}-{n}{f.suffix}"
-        n += 1
-    # os.link + unlink would leave two copies on a crash; rename is atomic on
-    # one filesystem, and archived/ is always on the same one as its parent.
-    os.rename(f, dest)
+    # os.rename replaces an existing destination without a word, and another
+    # process can take the name between a check and the rename. os.link fails
+    # if the name exists, so claiming it is atomic.
+    n = 1
+    while True:
+        dest = dest_dir / (f.name if n == 1 else f"{f.stem}-{n}{f.suffix}")
+        try:
+            os.link(f, dest)
+            break
+        except FileExistsError:
+            n += 1
+    os.unlink(f)
     return dest
 
 

@@ -35,8 +35,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import contextlib
+import fcntl
 import os
 import re
+import stat
 import tempfile
 from dataclasses import dataclass, field
 from datetime import date, timedelta
@@ -66,6 +69,7 @@ _LEARNING_RE = re.compile(
 )
 _HEADING_RE = re.compile(r"^##\s+Session Learnings\s+—\s+(?P<ts>\S+)")
 _SESSION_RE = re.compile(r"^Session:\s*(?P<sid>\S+)")
+_SLICE_RE = re.compile(r"^Slice:\s*\S+")
 _ENTRY_HDR_RE = re.compile(r"^<!-- entry (?P<json>\{.*\}) -->\s*$")
 _CAP_RE = re.compile(r"^>\s*Cap:\s*(?P<n>\d+)\s*KB", re.IGNORECASE)
 _WORD_RE = re.compile(r"[a-z0-9]{3,}")
@@ -148,23 +152,31 @@ def rank_sorted(entries: list[Entry]) -> list[Entry]:
 
 
 def parse_entries(text: str) -> list[Entry]:
+    """Parse a queue or archive file. Raises ``ValueError`` on anything it does
+    not recognise, so a caller never rewrites a file over text it cannot see."""
     entries: list[Entry] = []
     cur: Entry | None = None
     lines = text.splitlines()
     i = 0
     while i < len(lines):
-        m = _ENTRY_HDR_RE.match(lines[i])
+        l = lines[i]
+        m = _ENTRY_HDR_RE.match(l)
         if m:
             try:
                 meta = json.loads(m.group("json"))
             except json.JSONDecodeError:
                 raise ValueError(f"unreadable entry header on line {i + 1}")
             i += 1
-            line = lines[i] if i < len(lines) else ""
-            cur = Entry(line=line, meta=meta)
+            if i >= len(lines) or not lines[i].strip():
+                raise ValueError(f"entry on line {i} has no learning line")
+            cur = Entry(line=lines[i], meta=meta)
             entries.append(cur)
-        elif cur is not None and lines[i].startswith("  - also: "):
-            cur.also.append(lines[i][len("  - also: "):])
+        elif cur is not None and l.startswith("  - also: "):
+            cur.also.append(l[len("  - also: "):])
+        elif not l.strip():
+            pass
+        else:
+            raise ValueError(f"line {i + 1} is not part of any entry: {l[:60]!r}")
         i += 1
     return entries
 
@@ -177,6 +189,11 @@ def _atomic_write(path: Path, content: str) -> None:
             fh.write(content)
             fh.flush()
             os.fsync(fh.fileno())
+        try:
+            mode = stat.S_IMODE(path.stat().st_mode)
+        except OSError:
+            mode = 0o644
+        os.chmod(tmp, mode)
         os.replace(tmp, str(path))
     except BaseException:
         try:
@@ -192,7 +209,10 @@ def _atomic_write(path: Path, content: str) -> None:
 
 
 def slug(target: str) -> str:
-    return re.sub(r"[^A-Za-z0-9._-]+", "__", target.strip("/"))
+    """A file name for a target's queue. The hash keeps ``a/b.md`` and ``a__b.md``
+    (and names that differ only by case) in separate files."""
+    readable = re.sub(r"[^A-Za-z0-9._-]+", "__", target.strip("/"))[-80:]
+    return f"{readable}-{hashlib.sha1(target.encode()).hexdigest()[:6]}"
 
 
 class Store:
@@ -293,11 +313,15 @@ def merge_into(existing: Entry, new: Entry) -> None:
     if n.get("trust") == "verified":
         m["trust"] = "verified"
     m["correction"] = bool(m.get("correction") or n.get("correction"))
-    if new.description != existing.description and new.description not in existing.also:
-        existing.also.append(new.description)
+    # Keep the whole line, not only its description: the action and the label
+    # are what a later reader needs to tell two near-identical learnings apart.
+    if new.line != existing.line and new.line not in existing.also:
+        existing.also.append(new.line)
     for a in new.also:
-        if a not in existing.also and a != existing.description:
+        if a not in existing.also and a != existing.line:
             existing.also.append(a)
+    if n.get("kind") in ("RULE", "RULE-PROPOSAL") and m.get("kind") not in ("RULE", "RULE-PROPOSAL"):
+        m["kind"] = n["kind"]
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +352,8 @@ def _parse_raw_file(name: str, text: str) -> tuple[list[Entry], str | None]:
         if sm:
             sid = sm.group("sid")
             continue
+        if _SLICE_RE.match(line):
+            continue
         m = _LEARNING_RE.match(line)
         if not m:
             return [], f"line {lineno} is not a learning this review understands"
@@ -356,46 +382,92 @@ def _parse_raw_file(name: str, text: str) -> tuple[list[Entry], str | None]:
 
 def ingest(store: Store) -> IngestReport:
     """Move every entry in the raw learnings files into the store."""
+    import time
+
     rep = IngestReport()
     for f in sorted(store.root.glob("*.md")):
-        try:
-            text = f.read_text(encoding="utf-8")
-        except OSError as exc:
-            rep.files_held.append((f.name, f"unreadable ({exc.__class__.__name__})"))
-            continue
-        entries, hold = _parse_raw_file(f.name, text)
-        if hold:
-            rep.files_held.append((f.name, hold))
-            continue
-        try:
-            for e in entries:
-                dest = store.find_anywhere(e)
-                if dest is None:
-                    dest = store.queue_path(e.target)
-                store.add(dest, e)
-        except (OSError, ValueError) as exc:
-            rep.files_held.append((f.name, f"could not store its entries ({exc.__class__.__name__})"))
-            continue
-        rep.entries += len(entries)
-        try:
-            _archive_raw(f)
-        except OSError as exc:
-            rep.files_held.append((f.name, f"entries stored, file not moved ({exc.__class__.__name__})"))
-            continue
-        rep.files_archived.append(f.name)
+        with _file_lock(f) as locked:
+            if not locked:
+                try:
+                    if time.time() - f.stat().st_mtime < 120:
+                        rep.files_held.append((f.name, "changed in the last 2 minutes"))
+                        continue
+                except OSError:
+                    continue
+            _ingest_one(store, f, rep)
     return rep
 
 
+def _ingest_one(store: Store, f: Path, rep: IngestReport) -> None:
+    try:
+        text = f.read_text(encoding="utf-8")
+    except OSError as exc:
+        rep.files_held.append((f.name, f"unreadable ({exc.__class__.__name__})"))
+        return
+    entries, hold = _parse_raw_file(f.name, text)
+    if hold:
+        rep.files_held.append((f.name, hold))
+        return
+    try:
+        for e in entries:
+            dest = store.find_anywhere(e)
+            if dest is None:
+                dest = store.queue_path(e.target)
+            store.add(dest, e)
+    except (OSError, ValueError) as exc:
+        rep.files_held.append((f.name, f"could not store its entries ({exc.__class__.__name__})"))
+        return
+    rep.entries += len(entries)
+    try:
+        _archive_raw(f)
+    except OSError as exc:
+        rep.files_held.append((f.name, f"entries stored, file not moved ({exc.__class__.__name__})"))
+        return
+    rep.files_archived.append(f.name)
+
+
 def _archive_raw(f: Path) -> Path:
+    """Move *f* into ``archived/`` without ever overwriting what is there.
+
+    ``os.rename`` silently replaces an existing destination, and another process
+    can create the name between a check and the rename. ``os.link`` fails if the
+    name exists, so the claim is atomic.
+    """
     dest_dir = f.parent / "archived"
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / f.name
-    n = 2
-    while dest.exists():
-        dest = dest_dir / f"{f.stem}-{n}{f.suffix}"
-        n += 1
-    os.rename(f, dest)
+    n = 1
+    while True:
+        dest = dest_dir / (f.name if n == 1 else f"{f.stem}-{n}{f.suffix}")
+        try:
+            os.link(f, dest)
+            break
+        except FileExistsError:
+            n += 1
+    os.unlink(f)
     return dest
+
+
+@contextlib.contextmanager
+def _file_lock(f: Path):
+    """The lock the extractor holds while it appends to *f*, when it can be had.
+
+    Without it, a line appended between our read and our move lands in the
+    archived file and is never seen. Without the extraction module (an older
+    install) the file is skipped when it changed in the last two minutes.
+    """
+    try:
+        from lib.extraction import _lock_path
+    except Exception:
+        yield False
+        return
+    lock = _lock_path(f)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock, "w") as fd:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield True
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
 
 
 # ---------------------------------------------------------------------------
@@ -415,15 +487,38 @@ def expire_reserve(store: Store, *, today: str) -> int:
     cutoff = (date.fromisoformat(today) - timedelta(days=RESERVE_DAYS)).isoformat()
     n = 0
     for e in store.reserve():
-        if e.meta.get("reserved", today) < cutoff:
+        if str(e.meta.get("reserved") or today) < cutoff:
             store.move(e.key, store.reserve_path, store.rejected_path,
                        reason=f"in reserve since {e.meta.get('reserved')}, over {RESERVE_DAYS} days")
             n += 1
     return n
 
 
+def heal_duplicates(store: Store) -> int:
+    """Remove the copy of an entry that a crashed move left behind.
+
+    A move writes the destination before it removes the source, so a crash can
+    leave one entry in two files. The copy in the later stage is the stale one:
+    applied beats rejected beats a queue beats the reserve. Only an exact key
+    match is healed, and only after the surviving copy is confirmed present.
+    """
+    order = [store.applied_path, store.rejected_path]
+    order += [store.queue_path(t) for t in store.queue_targets()] + [store.reserve_path]
+    seen: dict[str, Path] = {}
+    healed = 0
+    for path in order:
+        for e in store.read(path):
+            if e.key in seen and seen[e.key] != path:
+                store.remove(path, e.key)
+                healed += 1
+            else:
+                seen.setdefault(e.key, path)
+    return healed
+
+
 def rebalance(store: Store, *, today: str) -> RebalanceReport:
     rep = RebalanceReport()
+    heal_duplicates(store)
     rep.expired = expire_reserve(store, today=today)
     for target in store.queue_targets():
         qp = store.queue_path(target)
@@ -507,7 +602,8 @@ def _default_add(e: Entry) -> str:
 
 
 def render_review_block(n: int, e: Entry, dirs: Dirs, *, expected_hash: str | None = None,
-                        changed_note: str = "") -> str:
+                        changed_note: str = "", add: str | None = None,
+                        section: str | None = None) -> str:
     tp = resolve_target(e.target, dirs)
     h = expected_hash if expected_hash is not None else (sha(tp) if tp else "unresolved")
     hdr = json.dumps({"key": e.key, "target": e.target, "hash": h}, sort_keys=True)
@@ -528,10 +624,10 @@ def render_review_block(n: int, e: Entry, dirs: Dirs, *, expected_hash: str | No
     if changed_note:
         lines.append(f"CHANGED: {changed_note}")
     lines += [
-        "Section: END",
+        f"Section: {section or 'END'}",
         "Add:",
         "```text",
-        _default_add(e),
+        add if add is not None else _default_add(e),
         "```",
         "- [ ] yes",
         "- [ ] no",
@@ -585,16 +681,19 @@ def parse_review(text: str) -> list[ReviewItem]:
         if not hdr:
             continue
         j = json.loads(hdr.group("json"))
-        section, add_lines, in_add, ticks, result = "END", [], False, [], ""
+        section, add_lines, in_add, done_add, ticks, result = "END", [], False, False, [], ""
         for l in lines[s:nxt]:
+            if in_add:
+                if l.strip() == "```":
+                    in_add, done_add = False, True
+                else:
+                    add_lines.append(l)
+                continue
+            if l.strip() == "```text" and not done_add:
+                in_add = True
+                continue
             if l.startswith("Section:"):
                 section = l.split(":", 1)[1].strip() or "END"
-            elif l.strip() == "```text" and not in_add and not add_lines:
-                in_add = True
-            elif l.strip() == "```" and in_add:
-                in_add = False
-            elif in_add:
-                add_lines.append(l)
             tm = _TICK_RE.match(l)
             if tm and tm.group("x") in "xX":
                 ticks.append(tm.group("what"))
@@ -615,6 +714,23 @@ def _set_result(text: str, item: ReviewItem, result: str) -> str:
     return "\n".join(lines[:item.start] + block + lines[item.end:]) + "\n"
 
 
+def _heading_lines(lines: list[str]) -> list[int]:
+    """Indices of real markdown headings: not inside a fenced code block."""
+    out, fence = [], None
+    for i, l in enumerate(lines):
+        m = re.match(r"^\s*(```+|~~~+)", l)
+        if m:
+            tok = m.group(1)[:3]
+            if fence is None:
+                fence = tok
+            elif fence == tok:
+                fence = None
+            continue
+        if fence is None and re.match(r"^#{1,6}\s+", l):
+            out.append(i)
+    return out
+
+
 def _insert(text: str, section: str, add: str) -> str | None:
     """Return *text* with *add* placed at the end of *section*, or None if the
     section does not exist. ``END`` means the end of the file."""
@@ -623,14 +739,14 @@ def _insert(text: str, section: str, add: str) -> str | None:
         sep = "" if not body or body.endswith("\n\n") else ""
         return body + sep + add.rstrip("\n") + "\n"
     lines = body.splitlines()
-    idx = next((i for i, l in enumerate(lines) if re.match(r"^#{1,6}\s+", l) and l.lstrip("# ").strip() == section.lstrip("# ").strip()), None)
+    heads = _heading_lines(lines)
+    idx = next((i for i in heads if lines[i].lstrip("# ").strip() == section.lstrip("# ").strip()), None)
     if idx is None:
         return None
     level = len(lines[idx]) - len(lines[idx].lstrip("#"))
     end = len(lines)
-    for i in range(idx + 1, len(lines)):
-        m = re.match(r"^(#{1,6})\s+", lines[i])
-        if m and len(m.group(1)) <= level:
+    for i in heads:
+        if i > idx and len(lines[i]) - len(lines[i].lstrip("#")) <= level:
             end = i
             break
     while end > idx + 1 and not lines[end - 1].strip():
@@ -698,13 +814,16 @@ def apply_review(path: Path, store: Store, dirs: Dirs, *, today: str,
                 0, entry, dirs,
                 changed_note=f"{tp.name} changed after this review was written. "
                              "Check the edit below, then tick again.",
+                add=item.add, section=item.section,
             ).replace("### 0.", f"### {number}.", 1)
             lines = text.splitlines()
             text = "\n".join(lines[:item.start] + fresh.splitlines() + [""] + lines[item.end:]) + "\n"
             rep.left.append((label, "target changed since the review was written; edit shown again"))
             continue
         before_hash = sha(tp)
-        if item.add.strip() in current:
+        have = {l.strip() for l in current.splitlines()}
+        want = [l.strip() for l in item.add.splitlines() if l.strip()]
+        if want and all(w in have for w in want):
             new_text = current
         else:
             new_text = _insert(current, item.section, item.add)
