@@ -5,16 +5,17 @@ to .multiplai/dreams/ for review. Run /multiplai-context:dream-remember to apply
 
 --auto: fully autonomous — applies changes directly to memory files without review.
 --check: report pending learnings count, chunk plan and predicted duration, and exit.
---gc-learnings: delete learnings files that are fully consolidated and fully
-    decided. Pure code, no model call.
+--gc-learnings: move learnings files that are fully consolidated and fully
+    decided into learnings/archived/. Pure code, no model call.
 
 The report path is a batching pipeline, not one big call: learnings are parsed
 into `## Session Learnings` blocks, filtered against a ledger of what has already
 been consolidated, packed into timeout-sized chunks, drafted concurrently, and
-merged deterministically into ONE document. Learnings files are never moved or
-deleted here — the ledger, not the filesystem, is what says "already done".
-Deletion lives in exactly two places: `--auto` after a successful apply, and the
-explicit `--gc-learnings` subcommand.
+merged deterministically into ONE document. The report path never moves or
+deletes learnings files — the ledger, not the filesystem, is what says "already
+done". Nothing deletes a learnings file anywhere. Two places move one into
+learnings/archived/: `--auto` after a successful apply, and the explicit
+`--gc-learnings` subcommand.
 """
 
 import asyncio
@@ -2324,8 +2325,14 @@ async def dream_auto() -> None:
             # blocks fed which target, which it does not.
             if failed_count == 0:
                 for f in source_files:
-                    f.unlink(missing_ok=True)
-                    logger.info("Deleted processed learnings: %s", f.name)
+                    try:
+                        dest = _archive_learning(f)
+                    except FileNotFoundError:
+                        continue
+                    except OSError:
+                        logger.exception("Could not archive %s — left in place", f.name)
+                        continue
+                    logger.info("Archived processed learnings: %s -> %s", f.name, dest)
                 # Fully applied → the audit artifact is no longer pending;
                 # archive it so the dreams root holds only pending proposals
                 # (dream-remember Step 1 must never re-present it). On any
@@ -3050,8 +3057,31 @@ def _reconcile(*, dry_run: bool = False) -> int:
     return 1 if (failures or unreadable) else 0
 
 
+def _archive_learning(f: Path) -> Path:
+    """Move a spent learnings file into ``archived/`` beside it. Never deletes.
+
+    ``.multiplai/learnings/`` is not a git repo, so an unlink here is
+    unrecoverable. Raises ``OSError`` when the move fails; the caller keeps the
+    file where it is. A name already in ``archived/`` is never overwritten: the
+    new file gets a ``-2``, ``-3`` suffix.
+    """
+    dest_dir = f.parent / "archived"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / f.name
+    n = 2
+    while dest.exists():
+        dest = dest_dir / f"{f.stem}-{n}{f.suffix}"
+        n += 1
+    # os.link + unlink would leave two copies on a crash; rename is atomic on
+    # one filesystem, and archived/ is always on the same one as its parent.
+    os.rename(f, dest)
+    return dest
+
+
 def _gc_learnings() -> None:
-    """Delete learnings files that are fully consolidated **and** fully decided.
+    """Archive learnings files that are fully consolidated **and** fully decided.
+
+    "Archive" means a move into ``learnings/archived/``; nothing is deleted.
 
     This replaces a judgement call the reviewing skill used to make in prose
     ("delete the sources, but only if the proposal is now fully decided, else
@@ -3059,7 +3089,7 @@ def _gc_learnings() -> None:
     when it was, so the decision moves into code, per file, with a stated reason
     for everything kept.
 
-    A file is deleted only when **all** of these hold:
+    A file is archived only when **all** of these hold:
 
     (a) every ``## Session Learnings`` record in it hashes to a key the ledger
         has recorded — i.e. dream has already consolidated all of it. A file
@@ -3145,7 +3175,7 @@ def _gc_learnings() -> None:
             print(f"GC learnings: {p.name} unreadable — nothing deleted this pass")
             return
 
-    deleted: list[str] = []
+    archived: list[str] = []
     kept: list[tuple[str, str]] = []
 
     for f in files:
@@ -3180,22 +3210,22 @@ def _gc_learnings() -> None:
             kept.append((f.name, "still cited by a pending proposal"))
             continue
         try:
-            f.unlink()
+            _archive_learning(f)
         except OSError as exc:
-            kept.append((f.name, f"could not delete ({exc.__class__.__name__})"))
+            kept.append((f.name, f"could not archive ({exc.__class__.__name__})"))
             continue
-        deleted.append(f.name)
+        archived.append(f.name)
 
-    if deleted:
+    if archived:
         remaining = {p.name for p in learnings_dir.glob("*.md")}
         learnings_ledger.prune(ledger_path, remaining)
 
-    print(f"GC learnings: deleted {len(deleted)}, kept {len(kept)}")
-    for name in deleted:
-        print(f"  deleted  {name}")
+    print(f"GC learnings: archived {len(archived)}, kept {len(kept)}")
+    for name in archived:
+        print(f"  archived {name}")
     for name, reason in kept:
         print(f"  kept     {name} — {reason}")
-    logger.info("gc-learnings: deleted=%d kept=%d", len(deleted), len(kept))
+    logger.info("gc-learnings: archived=%d kept=%d", len(archived), len(kept))
 
 
 # ---------------------------------------------------------------------------

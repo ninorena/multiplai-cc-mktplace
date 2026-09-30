@@ -497,7 +497,7 @@ def _archive(env, proposal, disposition="applied", body="x"):
 
 
 class TestGcLearnings:
-    def test_deletes_a_fully_ledgered_file_whose_proposal_is_archived(self, gc_env, capsys):
+    def test_archives_a_fully_ledgered_file_whose_proposal_is_archived(self, gc_env, capsys):
         _write_learnings(gc_env, "2026-07-29.md", LEARNINGS_A)
         _ledger_all(gc_env, "2026-07-29.md", "processed-learnings-2026-07-29.md")
         (gc_env["dreams"] / "applied").mkdir()
@@ -507,7 +507,7 @@ class TestGcLearnings:
 
         assert not (gc_env["learnings"] / "2026-07-29.md").exists()
         out = capsys.readouterr().out
-        assert "GC learnings: deleted 1, kept 0" in out
+        assert "GC learnings: archived 1, kept 0" in out
 
     def test_keeps_a_file_with_one_unledgered_block(self, gc_env, capsys):
         _write_learnings(gc_env, "2026-07-29.md", LEARNINGS_A)
@@ -518,7 +518,7 @@ class TestGcLearnings:
 
         assert (gc_env["learnings"] / "2026-07-29.md").exists()
         out = capsys.readouterr().out
-        assert "GC learnings: deleted 0, kept 1" in out
+        assert "GC learnings: archived 0, kept 1" in out
         assert "1/2 record(s) not yet consolidated" in out
 
     def test_keeps_a_file_whose_proposal_is_still_pending(self, gc_env, capsys):
@@ -542,7 +542,7 @@ class TestGcLearnings:
         gc_env["dream"]._gc_learnings()
 
         assert len(list(gc_env["learnings"].glob("*.md"))) == 2
-        assert "GC learnings: deleted 0, kept 2" in capsys.readouterr().out
+        assert "GC learnings: archived 0, kept 2" in capsys.readouterr().out
 
     def test_deletes_only_the_decided_file(self, gc_env, capsys):
         _write_learnings(gc_env, "2026-07-29.md", LEARNINGS_A)
@@ -559,7 +559,7 @@ class TestGcLearnings:
 
         assert not (gc_env["learnings"] / "2026-07-29.md").exists()
         assert (gc_env["learnings"] / "2026-07-30.md").exists()
-        assert "GC learnings: deleted 1, kept 1" in capsys.readouterr().out
+        assert "GC learnings: archived 1, kept 1" in capsys.readouterr().out
 
     def test_prunes_ledger_keys_for_deleted_files(self, gc_env):
         _write_learnings(gc_env, "2026-07-29.md", LEARNINGS_A)
@@ -632,7 +632,7 @@ class TestGcDoesNotEatLiveInputs:
 
         assert (gc_env["learnings"] / "2026-07-29.md").exists()
         assert (gc_env["learnings"] / "2026-07-30.md").exists()
-        assert "GC learnings: deleted 0, kept 2" in capsys.readouterr().out
+        assert "GC learnings: archived 0, kept 2" in capsys.readouterr().out
 
     def test_a_decided_proposal_is_still_collected(self, gc_env, capsys):
         """The guard must not simply stop gc working — rejected/ counts too."""
@@ -643,7 +643,7 @@ class TestGcDoesNotEatLiveInputs:
         gc_env["dream"]._gc_learnings()
 
         assert not (gc_env["learnings"] / "2026-07-29.md").exists()
-        assert "GC learnings: deleted 1, kept 0" in capsys.readouterr().out
+        assert "GC learnings: archived 1, kept 0" in capsys.readouterr().out
 
     # --- #111: folded forward, ledger left pointing at the predecessor ------
 

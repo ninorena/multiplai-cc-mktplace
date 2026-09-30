@@ -16,6 +16,20 @@ are the release dates recorded at the time, not derived from a tag.
 
 ## [Unreleased]
 
+## [0.56.0] - 2026-09-30
+
+### Changed
+
+- **`/dream-remember` no longer deletes learnings files. It moves them to
+  `.multiplai/learnings/archived/`.** Step 5 (`dream.py --gc-learnings`) and the
+  `--auto` apply used to delete each spent file, and the skill said "Git history
+  preserves originals". That was false: `.multiplai/learnings/` is not a git
+  repo, so a deleted learning was gone. Now the same files are chosen by the same
+  rules, but they are moved. A name already in `archived/` is never overwritten
+  (the new file gets `-2`, `-3`). If a move fails, the file stays where it was.
+  The collector prints `archived N` where it used to print `deleted N`. To get a
+  file back, move it out of `archived/`.
+
 ## [0.55.2] - 2026-09-28
 
 ### Changed
