@@ -55,7 +55,7 @@ from multiplai_core.config import load_yaml, save_yaml
 from multiplai_core.log_utils import setup_logging
 from generators.config import load_catalog_config
 from generators.dispatcher import generate_catalogs
-from lib import citation_repair, learnings_ledger, taxonomy
+from lib import citation_repair, daily_review, learnings_ledger, taxonomy
 from lib.dream_processed import (
     PROCESSED_HEADING,
     Decision,
@@ -3233,6 +3233,71 @@ def _gc_learnings() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _daily_dirs() -> "daily_review.Dirs":
+    paths = get_paths()
+    learnings = Path(paths.learnings_dir)
+    return daily_review.Dirs(
+        workspace=learnings.parent.parent,
+        memory=Path(paths.memory_dir()),
+        learnings=learnings,
+        dreams=Path(paths.dreams_dir()),
+    )
+
+
+def _daily_review(today: str | None = None) -> int:
+    """Sort learnings into one queue per target file and write today's review file.
+
+    Pure code, no model call. Nothing is deleted: entries move between files.
+    """
+    if not acquire_run_lock():
+        return 1
+    today = today or datetime.now().strftime("%Y-%m-%d")
+    dirs = _daily_dirs()
+    dirs.learnings.mkdir(parents=True, exist_ok=True)
+    store = daily_review.Store(dirs.learnings)
+    ing = daily_review.ingest(store)
+    bal = daily_review.rebalance(store, today=today)
+    path, n = daily_review.build_review(store, dirs, today=today)
+    print(f"Ingested {ing.entries} entr(ies) from {len(ing.files_archived)} file(s).")
+    for name, why in ing.files_held:
+        print(f"  held     {name}: {why}")
+    print(f"Reserve: {bal.to_reserve} moved in, {bal.refilled} refilled, {bal.expired} expired to rejected.")
+    if path is None:
+        print("Nothing to review today.")
+    else:
+        print(f"Review file: {path} ({n} entr(ies))")
+    return 0
+
+
+def _daily_apply(review_arg: str | None = None, today: str | None = None) -> int:
+    """Apply the ticked entries of a review file. Only `yes` writes anything."""
+    if not acquire_run_lock():
+        return 1
+    today = today or datetime.now().strftime("%Y-%m-%d")
+    dirs = _daily_dirs()
+    path = Path(review_arg) if review_arg else daily_review.review_path(dirs, today)
+    if not path.is_file():
+        print(f"No review file at {path}")
+        return 1
+    store = daily_review.Store(dirs.learnings)
+    rep = daily_review.apply_review(path, store, dirs, today=today, refresh=_refresh_last_updated)
+    print(f"Applied {len(rep.applied)}, rejected {len(rep.rejected)}, left {len(rep.left)}.")
+    for label in rep.applied:
+        print(f"  applied  {label}")
+    for label in rep.rejected:
+        print(f"  rejected {label}")
+    for label, why in rep.left:
+        print(f"  left     {label}: {why}")
+    in_memory = [p for p in rep.written_files if dirs.memory.resolve() in p.resolve().parents]
+    if in_memory:
+        _commit_memory_changes(
+            dirs.memory,
+            pathspec=[str(p.resolve().relative_to(dirs.memory.resolve())) for p in in_memory],
+            message="memory: daily learnings review",
+        )
+    return 0
+
+
 def _load_decisions(source: str) -> list[Decision]:
     """Parse a JSON array of decisions from stdin (``-``) or a file.
 
@@ -3362,6 +3427,20 @@ def main() -> None:
              "pending). Pure code, no model call, no lock. Prints what it removed "
              "and why it kept the rest.",
     )
+    parser.add_argument(
+        "--daily-review",
+        action="store_true",
+        help="Sort learnings into one queue per target file (at most 10 each, the "
+             "rest to archived/reserve.md) and write dreams/review-YYYY-MM-DD.md "
+             "with the top 2 of each queue. Pure code, no model call, deletes nothing.",
+    )
+    parser.add_argument(
+        "--daily",
+        action="store_true",
+        help="Apply the ticked entries of today's review file (or --review FILE). "
+             "Only a ticked `yes` writes to a memory or project file.",
+    )
+    parser.add_argument("--review", metavar="FILE", help="With --daily: the review file to apply.")
     args = parser.parse_args()
 
     # `--dry-run` is read only by the paths that name it below. Without this,
@@ -3461,6 +3540,12 @@ def main() -> None:
             )
             print(f"Archived proposal to {archived}")
         return
+
+    if args.daily_review:
+        sys.exit(_daily_review())
+
+    if args.daily:
+        sys.exit(_daily_apply(args.review))
 
     if args.reconcile:
         sys.exit(_reconcile(dry_run=args.dry_run))

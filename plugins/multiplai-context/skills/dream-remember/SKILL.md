@@ -7,6 +7,30 @@ effort: medium
 
 # Multiplai: Process Learnings
 
+## `--daily`: apply today's review file
+
+If the user ran `/multiplai-context:dream-remember --daily`, do only this and stop.
+Do not run Steps 0 to 8.
+
+```
+uv run --project "${CLAUDE_PLUGIN_ROOT}/scripts" "${CLAUDE_PLUGIN_ROOT}/scripts/dream.py" --daily
+```
+
+It reads `.multiplai/dreams/review-YYYY-MM-DD.md` (add `--review <file>` for another
+day's file), applies only the entries with `yes` ticked, and moves `no` entries to
+`.multiplai/learnings/archived/rejected.md`. `later` and no tick leave the entry in its
+queue. Pure code, no model call. Relay its output as printed, including every `left` line
+and its reason. Nothing is deleted: an applied entry moves to `archived/applied.md`.
+
+If it reports a target file changed, the review file now shows the new edit under a
+`CHANGED:` line with the boxes cleared. Tell the user to check it and tick again.
+
+Do not edit the review file yourself, and do not tick a box for the user.
+
+The rest of this skill is the older whole-proposal review.
+
+---
+
 Human-in-the-loop workflow for applying accumulated session learnings to memory files.
 
 Dream (nightly or on demand via `/multiplai-context:dream`) generates a proposal file in

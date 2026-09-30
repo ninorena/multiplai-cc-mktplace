@@ -50,6 +50,32 @@ Run `/multiplai-context:dream-remember` to load the proposal and apply approved 
 
 ---
 
+## Daily review (`--daily-review`): two entries per file, per day
+
+The routine path. Pure code, no model call, seconds to run, deletes nothing:
+
+```
+uv run --project "${CLAUDE_PLUGIN_ROOT}/scripts" "${CLAUDE_PLUGIN_ROOT}/scripts/dream.py" --daily-review
+```
+
+1. Every entry in `.multiplai/learnings/*.md` is stored in a queue for its target file
+   (`.multiplai/learnings/queues/`). Entries that say the same thing merge into one, and
+   keep every wording. Raw files move to `learnings/archived/` once their entries are safe.
+   A file with a line it does not understand stays where it is, and the output names it.
+2. Each queue keeps its best 10: corrections first, then entries seen in 2 or more
+   sessions, then `verified`, then newest. The rest go to `archived/reserve.md`. A queue
+   under 10 refills from the reserve. Reserve entries older than 90 days move to
+   `archived/rejected.md`.
+3. `.multiplai/dreams/review-YYYY-MM-DD.md` gets the top 2 of each queue, with the exact
+   text to add and three boxes. An existing file for the day is kept, not overwritten.
+
+Report the counts and the review file path. Then remind the user to tick the boxes and
+run `/multiplai-context:dream-remember --daily`. Do not tick anything.
+
+The steps below are the older whole-backlog proposal, for when the user asks for it.
+
+---
+
 ## Steps
 
 1. **Check for pending learnings:**

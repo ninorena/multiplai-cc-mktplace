@@ -30,6 +30,23 @@ are the release dates recorded at the time, not derived from a tag.
   The collector prints `archived N` where it used to print `deleted N`. To get a
   file back, move it out of `archived/`.
 
+### Added
+
+- **A daily review: two learnings per target file, per day, by tick.**
+  `dream.py --daily-review` (no model call, deletes nothing) sorts every learning
+  into a queue for its target file. Entries that say the same thing merge into
+  one and keep each wording. Each queue keeps its best 10, ranked corrections
+  first, then entries seen in 2 or more sessions, then `verified`, then newest.
+  The rest go to `learnings/archived/reserve.md`, refill a queue that falls below
+  10, and move to `rejected.md` after 90 days. It writes
+  `dreams/review-YYYY-MM-DD.md`: the top 2 of each queue, the exact text to add,
+  and three boxes (yes, no, later). You can edit the text before you tick.
+  `/multiplai-context:dream-remember --daily` applies only the `yes` entries,
+  stops and shows the edit again if the target file changed since the review was
+  written, refuses an edit that would push a file past its `> Cap:`, and writes
+  nothing for `later` or no tick. `no` moves to `archived/rejected.md`, and `yes`
+  to `archived/applied.md`. The older whole-proposal `/dream` is unchanged.
+
 ## [0.55.2] - 2026-09-28
 
 ### Changed
