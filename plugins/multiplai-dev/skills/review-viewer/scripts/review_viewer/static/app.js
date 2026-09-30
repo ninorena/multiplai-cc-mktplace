@@ -60,6 +60,7 @@
     split: false,
     wrap: false,
     blockRows: [],
+    blockPin: null,
     shownMsgs: new Set(),
     fatal: null,
     toastTimer: null,
@@ -314,6 +315,7 @@
     state.walkFocus = null;
     state.fileNote = null;
     state.badgeOpen = null;
+    state.blockPin = null;
     if (!state.tabChosen) state.tab = "summary";
     const target = state.detail.findings.target;
     $("title").textContent = target.label;
@@ -435,20 +437,76 @@
     return el("div", { class: "empty-state" }, [el("span", { class: "big", text: icon }), text]);
   }
 
+  // --- risk ------------------------------------------------------------------------
+
+  const RISK_BADGE = { high: "concern", medium: "note", low: "good" };
+
+  /* The risk score, or null until the walkthrough has its risk block. */
+  function currentRisk() {
+    const r = L.riskInputs(state.detail.stats, state.walk, state.detail.findings.findings,
+      state.detail.decisions, state.detail.findings.target.files_changed);
+    return r ? Object.assign({ inputs: r }, L.riskLevel(r)) : null;
+  }
+
+  function riskWord(level) {
+    return level.charAt(0).toUpperCase() + level.slice(1);
+  }
+
+  /* Markdown for the risk badge's detail: the rules that fired, then every input. */
+  function riskDetail(risk) {
+    const r = risk.inputs;
+    const findingsLine = r.openHigh + " HIGH, " + r.openMedium + " MEDIUM (confirmed and not rejected)";
+    return "**" + riskWord(risk.level) + "** because:\n\n" + risk.reasons.map((x) => "- " + x).join("\n") +
+      "\n\n**Inputs**\n\n" + [
+        "Touches tier " + r.tier + ", " + L.TIER_NAMES[r.tier] + ": " + r.tierWhy,
+        (r.revertable ? "A revert undoes it: " : "A revert cannot undo it: ") + r.revertWhy,
+        "Tests: " + (r.tests || "not assessed yet"),
+        "PR checks: " + (state.detail.pr ? (r.checksFailing ? "failing" : "not failing") : "no PR"),
+        "Size: " + (r.large ? "large" : "not large"),
+        "Open findings: " + findingsLine,
+      ].map((x) => "- " + x).join("\n") +
+      "\n\nThe rules are fixed; the review-viewer skill's SKILL.md lists them.";
+  }
+
+  function renderRisk() {
+    const pill = $("risk-pill");
+    const risk = currentRisk();
+    pill.hidden = false;
+    pill.className = "risk-pill " + (risk ? RISK_BADGE[risk.level] : "pending");
+    pill.textContent = risk ? "Risk: " + riskWord(risk.level) : "Risk: not scored yet";
+    pill.title = risk ? risk.reasons.join("; ") : "Scored once " + (state.who ? state.who.agent : "the session") +
+      " writes the walkthrough's risk block.";
+    pill.onclick = () => {
+      state.badgeOpen = risk ? "risk" : null;
+      setTab("summary");
+      renderSummary();
+    };
+    return risk;
+  }
+
   // --- summary ---------------------------------------------------------------------
 
   function renderSummary() {
     const agent = state.who ? state.who.agent : "the session";
+    const risk = renderRisk();
     const badges = L.summaryBadges(state.detail.stats, state.walk);
+    if (risk) {
+      badges.unshift({ key: "risk", label: "Risk: " + riskWord(risk.level) + " · " + risk.reasons[0],
+        level: RISK_BADGE[risk.level], detail: riskDetail(risk), source: "risk" });
+    }
     const box = $("badges");
     box.replaceChildren();
-    const groups = [["measured", "Measured from git" + (state.detail.pr ? " and GitHub" : "")],
+    const groups = [["risk", "Risk of merging"],
+      ["measured", "Measured from git" + (state.detail.pr ? " and GitHub" : "")],
       ["assessed", "Assessed by " + agent]];
     for (const [source, title] of groups) {
       const mine = badges.filter((b) => b.source === source);
       const row = el("div", { class: "badge-row" }, [el("div", { class: "label", text: title })]);
       if (!mine.length) {
-        if (source === "assessed" && (!state.walk || !state.walk.complete) && !walkOverdue()) {
+        if (source === "risk") {
+          row.appendChild(el("span", { class: "muted small", text: "Scored once " + agent +
+            " writes the walkthrough's risk block." }));
+        } else if (source === "assessed" && (!state.walk || !state.walk.complete) && !walkOverdue()) {
           for (let i = 0; i < 3; i++) row.appendChild(el("span", { class: "skel pill" }));
         } else {
           row.appendChild(el("span", { class: "muted small", text: source === "measured"
@@ -458,7 +516,8 @@
       for (const b of mine) {
         row.appendChild(el("button", {
           class: "qbadge " + b.level + (state.badgeOpen === b.key ? " open" : ""),
-          title: source === "measured" ? b.detail : "Click for " + agent + "'s reasoning",
+          title: source === "measured" ? b.detail : source === "risk" ? "Click for the rules and inputs"
+            : b.label + " (click for " + agent + "'s reasoning)",
           "aria-expanded": String(state.badgeOpen === b.key),
           text: b.label,
           onclick: () => { state.badgeOpen = state.badgeOpen === b.key ? null : b.key; renderSummary(); },
@@ -470,7 +529,7 @@
     const detail = $("badge-detail");
     detail.hidden = !open;
     if (open) {
-      if (open.source === "assessed") renderMarkdown(detail, open.detail);
+      if (open.source !== "measured") renderMarkdown(detail, open.detail);
       else detail.replaceChildren(el("p", { text: open.detail }));
     }
     const overview = $("walk-overview");
@@ -611,14 +670,18 @@
     if (cards.length) {
       box.appendChild(el("div", { class: "label", text: "Findings in this step" }));
       for (const f of cards) {
-        box.appendChild(el("button", {
-          class: "finding-item finding-card " + f.severity, "data-id": f.id,
-          onclick: () => { setTab("finding"); selectFinding(f.id); },
-        }, [
-          el("span", { class: "badge " + f.severity, text: f.severity }),
-          el("span", { class: "badge", text: f.status }),
-          el("span", { class: "claim", text: f.claim }),
-          el("span", { class: "where", text: f.file + ":" + f.line_start }),
+        box.appendChild(el("div", { class: "step-finding" }, [
+          el("button", {
+            class: "finding-item finding-card " + f.severity, "data-id": f.id,
+            title: "Open on the Findings tab to decide",
+            onclick: () => { setTab("finding"); selectFinding(f.id); },
+          }, [
+            el("span", { class: "badge " + f.severity, text: f.severity }),
+            el("span", { class: "badge", text: f.status }),
+            el("span", { class: "claim", text: f.claim }),
+            el("span", { class: "where", text: f.file + ":" + f.line_start }),
+          ]),
+          el("div", { class: "step-finding-facts" }, findingFacts(f)),
         ]));
       }
     }
@@ -931,6 +994,20 @@
     });
   }
 
+  /* What a finding says beyond its claim: the failure scenario, the expected
+   * behaviour, the verdict and the cited code. Shown on the Findings tab and
+   * under each walkthrough step that links the finding. */
+  function findingFacts(f) {
+    const out = [el("div", { class: "label", text: "Failure scenario" }), el("p", { text: f.failure_scenario })];
+    if (f.expected_behaviour) {
+      out.push(el("div", { class: "label", text: "Expected behaviour" }), el("p", { text: f.expected_behaviour }));
+    }
+    if (f.verdict_reason) out.push(el("div", { class: "label", text: "Verdict" }), el("p", { text: f.verdict_reason }));
+    out.push(el("div", { class: "label", text: "Cited code" }));
+    for (const c of f.citations) out.push(citationLink(c));
+    return out;
+  }
+
   function renderDetail() {
     const box = $("finding-detail");
     box.replaceChildren();
@@ -945,42 +1022,12 @@
       el("span", { class: "badge", text: f.status }),
     ]));
     box.appendChild(el("h2", { text: f.claim }));
-    box.appendChild(el("div", { class: "label", text: "Failure scenario" }));
-    box.appendChild(el("p", { text: f.failure_scenario }));
-    if (f.verdict_reason) {
-      box.appendChild(el("div", { class: "label", text: "Verdict" }));
-      box.appendChild(el("p", { text: f.verdict_reason }));
-    }
-    box.appendChild(el("div", { class: "label", text: "Cited code" }));
-    for (const c of f.citations) box.appendChild(citationLink(c));
+    for (const node of findingFacts(f)) box.appendChild(node);
     const steps = L.stepsForFinding(state.walk, f.id);
     if (steps.length) {
       box.appendChild(el("div", { class: "label", text: "Explained in the walkthrough" }));
       for (const s of steps) {
         box.appendChild(el("button", { class: "cite-link", text: s.title, onclick: () => selectStep(s.id, { open: true }) }));
-      }
-    }
-    if (f.fix) {
-      box.appendChild(el("div", { class: "label", text: "Fix" }));
-      box.appendChild(el("p", { text: f.fix.description }));
-      if (f.fix.patch_sketch) box.appendChild(el("pre", { class: "sketch", text: f.fix.patch_sketch }));
-      if (f.fix.premises.length) {
-        box.appendChild(el("div", { class: "label", text: "Premises" }));
-        const ul = el("ul");
-        for (const p of f.fix.premises) {
-          ul.appendChild(el("li", {}, [
-            p.kind === "external" ? el("span", { class: "assumption", text: "Assumption: " }) : null,
-            p.statement,
-            p.citation ? citationLink(p.citation) : null,
-          ]));
-        }
-        box.appendChild(ul);
-      }
-      if (f.fix.open_questions.length) {
-        box.appendChild(el("div", { class: "label", text: "Open questions" }));
-        const ul = el("ul");
-        for (const q of f.fix.open_questions) ul.appendChild(el("li", { text: q }));
-        box.appendChild(ul);
       }
     }
     box.appendChild(decisionBox(f));
@@ -1013,6 +1060,9 @@
       state.detail.decisions[id] = res.decision;
       renderFindingList();
       renderDetail();
+      // renderSummary rebuilds the Summary tab's risk badge and calls renderRisk
+      // for the header pill, so both show the score after this decision.
+      renderSummary();
     } catch (err) {
       showToast("Could not record the decision: " + err.message);
     }
@@ -1452,35 +1502,54 @@
    * jumped to lands (see moveBlock). */
   const REF_OFFSET = 72;
 
+  /* Which ends of its scroll range the code pane is against. A pane that
+   * does not scroll is against both. */
+  function paneEdge() {
+    const code = $("code");
+    return { top: code.scrollTop <= 1, bottom: code.scrollTop + code.clientHeight >= code.scrollHeight - 1 };
+  }
+
+  /* The block of changes Prev/Next last moved to in this file, by its first
+   * row. It stays current while the pane cannot scroll that block up to the
+   * reference line: near the end or the start of the file, or when the whole
+   * file fits on screen. */
+  function blockPin() {
+    const pin = state.blockPin;
+    return pin && state.view && pin.path === state.view.path ? pin.row : null;
+  }
+
   function updateBlockLine() {
     const view = state.view;
     const starts = state.blockRows || [];
     const ri = view && !view.binary ? rowAt(REF_OFFSET) : null;
-    let k = 0;
-    if (ri != null) for (const s of starts) if (s <= ri) k += 1;
+    const edge = paneEdge();
+    const k = L.currentBlock(starts, ri, blockPin(), edge) + 1;
     const scope = ri != null ? L.enclosingScope(view.rows, ri) : null;
     $("block-where").textContent = scope ? "in " + scope : "";
     $("block-where").title = scope || "";
     $("block-pos").textContent = !starts.length ? "no changes shown"
       : k ? "change " + k + " of " + starts.length : starts.length + " change" + (starts.length === 1 ? "" : "s");
-    $("block-prev").disabled = ri == null || L.stepBlock(starts, ri, -1) < 0;
-    $("block-next").disabled = ri == null || L.stepBlock(starts, ri, 1) < 0;
+    $("block-prev").disabled = ri == null || L.stepCurrent(starts, ri, blockPin(), edge, -1) < 0;
+    $("block-next").disabled = ri == null || L.stepCurrent(starts, ri, blockPin(), edge, 1) < 0;
   }
 
   function moveBlock(delta) {
     const ri = rowAt(REF_OFFSET);
     if (ri == null) return;
-    const idx = L.stepBlock(state.blockRows, ri, delta);
+    const idx = L.stepCurrent(state.blockRows, ri, blockPin(), paneEdge(), delta);
     if (idx < 0) return;
     const target = state.blockRows[idx];
     const tr = rowEl(target);
     if (!tr) return;
+    state.blockPin = { path: state.view.path, row: target };
     const code = $("code");
     const top = tr.getBoundingClientRect().top - code.getBoundingClientRect().top + code.scrollTop;
     code.scrollTo({ top: Math.max(0, top - REF_OFFSET + 8), behavior: reducedMotion() ? "auto" : "smooth" });
     tr.classList.remove("flash");
     void tr.offsetWidth;
     tr.classList.add("flash");
+    // When the pane is already as far as it goes, no scroll event follows.
+    updateBlockLine();
   }
 
   function reducedMotion() {

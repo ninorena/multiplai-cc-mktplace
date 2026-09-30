@@ -1,4 +1,4 @@
-"""target → find → verify → prescribe → check_fix → export → render.
+"""target → find → verify → merge → export → render.
 
 `review-state.json` is written after every stage; `resume` reloads it and
 continues from the first stage not yet done.
@@ -23,9 +23,8 @@ from .models import SEVERITIES, ReviewState
 from .progress import ProgressWriter
 from .render import summary_path, write_review, write_rollups
 from .stages import RunContext
-from .stages.check_fix import run_check_fix
 from .stages.find import run_find
-from .stages.prescribe import run_prescribe
+from .stages.merge import run_merge
 from .stages.verify import run_verify
 from .state import load_state, save_state
 
@@ -34,17 +33,14 @@ log = logging.getLogger(__name__)
 STAGE_FUNCTIONS = (
     ("find", run_find),
     ("verify", run_verify),
-    ("prescribe", run_prescribe),
-    ("check_fix", run_check_fix),
+    ("merge", run_merge),
 )
 
 # The gate reasons that may reach activity.jsonl. A raw reason can quote a
-# premise; the log records only which rule fired.
+# citation; the log records only which rule fired.
 _REASON_KINDS = (
     "quote not at cited lines", "path not at head", "empty quote", "is not a changed file",
-    "unknown severity", "no citations", "premise cites the definition", "not a line that uses it",
-    "cites nothing", "must cite the lines", "must not carry a citation", "lists no premises",
-    "confirmed without citing", "none of its citations reproduce",
+    "unknown severity", "no citations", "confirmed without citing", "none of its citations reproduce",
 )
 
 
@@ -115,7 +111,7 @@ async def run_state(state: ReviewState, target_dir: Path, config: ReviewConfig, 
         log_event("review", "stage", summary, session_id=session_id, target=t.slug, stage=name,
                   counts=dict(ctx.counts), cost_usd=round(ledger.cost_usd, 4))
         if ctx.gate_reasons:
-            noun = "findings" if name == "find" else "fixes" if name == "prescribe" else "verdicts"
+            noun = "findings" if name == "find" else "verdicts"
             log_event("review", "gate_reject", f"{len(ctx.gate_reasons)} {noun} rejected by gates",
                       session_id=session_id, target=t.slug, stage=name, count=len(ctx.gate_reasons),
                       reasons=sorted({reason_kind(r) for r in ctx.gate_reasons}))

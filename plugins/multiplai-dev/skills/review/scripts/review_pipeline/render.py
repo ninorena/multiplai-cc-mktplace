@@ -1,9 +1,9 @@
 """Markdown: the per-target review, and severity rollups across targets.
 
 Both render from `findings.json` v1 dicts, so a rollup never scrapes markdown.
-The per-target review adds two things only the pipeline state has: the
-severity a finding had before it was lowered, and the question to ask for each
-external premise ("Assumption: … Ask: …").
+The per-target review adds what only the pipeline state has: the severity a
+finding had before it was lowered, the finders that reported it, and the
+findings merged into it.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import re
 from pathlib import Path
 
 from .export import to_findings_file
-from .models import NO_VERIFIED_FIX, SEVERITIES, ReviewState
+from .models import SEVERITIES, ReviewState
 from .target import github_web_base
 
 log = logging.getLogger(__name__)
@@ -43,9 +43,8 @@ def _one_line(text: str) -> str:
 
 def finding_section(fd: dict, *, web_base: str | None, head_sha: str,
                     original_severity: str | None = None,
-                    questions: dict[str, str] | None = None) -> str:
-    """One finding. *questions* maps an external premise's statement to what to ask."""
-    questions = questions or {}
+                    finders: list[str] | None = None) -> str:
+    """One finding. *finders* are the finders that reported it, from the pipeline state."""
     lines_ = f"{fd['line_start']}" if fd["line_start"] == fd["line_end"] else f"{fd['line_start']}-{fd['line_end']}"
     out = [f"### {fd['severity']} — {fd['file']}:{lines_} — {_one_line(fd['claim'])}", ""]
 
@@ -53,6 +52,8 @@ def finding_section(fd: dict, *, web_base: str | None, head_sha: str,
     if original_severity and original_severity != fd["severity"]:
         status += f" (lowered from {original_severity})"
     out += [f"**Verdict:** {status}. {_one_line(fd.get('verdict_reason') or '')}".rstrip(), ""]
+    if finders and len(finders) > 1:
+        out += [f"**Reported by:** {', '.join(finders)}", ""]
 
     out.append("**Evidence:**")
     out.append("")
@@ -62,36 +63,8 @@ def finding_section(fd: dict, *, web_base: str | None, head_sha: str,
         out.append(_fence(c["quote"]))
         out.append("")
     out += [f"**Failure scenario:** {_one_line(fd['failure_scenario'])}", ""]
-
-    fix = fd.get("fix")
-    if fix:
-        if fix["description"] == NO_VERIFIED_FIX:
-            out += ["**Fix:** no verified fix.", ""]
-        else:
-            out += [f"**Fix:** {fix['description'].strip()}", ""]
-            if fix.get("patch_sketch"):
-                out += [_fence(fix["patch_sketch"]), ""]
-        asked = set()
-        if fix.get("premises"):
-            out.append("Premises:")
-            for i, p in enumerate(fix["premises"], 1):
-                if p["kind"] == "external":
-                    question = questions.get(p["statement"])
-                    text = f"Assumption: {_one_line(p['statement']).rstrip('.')}."
-                    if question:
-                        text += f" Ask: {_one_line(question)}"
-                        asked.add(question)
-                    out.append(f"{i}. {text}")
-                else:
-                    c = p.get("citation")
-                    where = f" — {code_link(web_base, head_sha, c['path'], c['line_start'], c['line_end'])}" if c else ""
-                    out.append(f"{i}. {_one_line(p['statement'])}{where}")
-            out.append("")
-        remaining = [q for q in fix.get("open_questions") or [] if q not in asked]
-        if remaining:
-            out.append("Open questions:")
-            out += [f"- {_one_line(q)}" for q in remaining]
-            out.append("")
+    if fd.get("expected_behaviour"):
+        out += [f"**Expected behaviour:** {_one_line(fd['expected_behaviour'])}", ""]
     return "\n".join(out)
 
 
@@ -132,11 +105,7 @@ def render_review(state: ReviewState, *, deployed: str | None = None,
         out.append("- **Agent failures:** " + "; ".join(_one_line(e) for e in state.errors))
     out += ["", "## Findings", ""]
 
-    questions = {}
-    for fix in state.fixes.values():
-        for p in fix.premises:
-            if p.kind == "external" and p.question:
-                questions[p.statement] = p.question
+    finders = {f.id: f.finders for f in state.findings}
 
     shown = [f for f in findings if f["status"] in SHOWN_STATUSES]
     if not shown:
@@ -149,17 +118,21 @@ def render_review(state: ReviewState, *, deployed: str | None = None,
         for fd in group:
             out.append(finding_section(fd, web_base=web, head_sha=head,
                                        original_severity=state.original_severity.get(fd["id"]),
-                                       questions=questions))
+                                       finders=finders.get(fd["id"])))
 
-    out += ["## Appendix — rejected and refuted", ""]
+    out += ["## Appendix — rejected, refuted and merged", ""]
     dropped = [f for f in findings if f["status"] in ("refuted", "rejected")]
-    if not dropped:
-        out += ["Nothing was rejected or refuted.", ""]
+    if not dropped and not state.merged:
+        out += ["Nothing was rejected, refuted or merged.", ""]
     for fd in dropped:
         lines_ = f"{fd['line_start']}-{fd['line_end']}"
         who = "the verifier" if fd["status"] == "refuted" else "a gate"
         out.append(f"- **{fd['status']}** ({fd['severity']}) `{fd['file']}:{lines_}` — {_one_line(fd['claim'])}  ")
         out.append(f"  Reason from {who}: {_one_line(fd.get('verdict_reason') or '')}")
+    for m in state.merged:
+        f = m.finding
+        out.append(f"- **merged** ({f.severity}) `{f.file}:{f.line_start}-{f.line_end}` — {_one_line(f.claim)}  ")
+        out.append(f"  Merged into `{m.into}`: {_one_line(m.reason)}")
     out.append("")
     return "\n".join(out)
 
@@ -202,26 +175,17 @@ def render_summary(state: ReviewState, *, findings_file: dict | None = None) -> 
     counts = _counts(findings)
     shown = [f for f in findings if f["status"] in SHOWN_STATUSES]
     dropped = [f for f in findings if f["status"] in ("refuted", "rejected")]
-    fixes = [f for f in shown if f.get("fix") and f["fix"]["description"] != NO_VERIFIED_FIX]
 
     out = [f"# Review summary — {t.label or t.slug}", ""]
     out.append(f"{len(t.commits)} commits, {len(t.files)} files, {t.base_sha[:10]}..{t.head_sha[:10]}.")
     if state.budget.get("cost_usd") is not None:
         out.append(f"Cost ${float(state.budget['cost_usd']):.2f} over {state.budget.get('calls', 0)} agent calls.")
-    out.append(f"Findings: {counts['HIGH']} HIGH, {counts['MEDIUM']} MEDIUM, {counts['LOW']} LOW; "
-               f"{len(fixes)} with a verified fix. Dropped: "
+    out.append(f"Findings: {counts['HIGH']} HIGH, {counts['MEDIUM']} MEDIUM, {counts['LOW']} LOW. Dropped: "
                f"{sum(1 for f in dropped if f['status'] == 'refuted')} refuted by the verifier, "
-               f"{sum(1 for f in dropped if f['status'] == 'rejected')} rejected by the gates.")
+               f"{sum(1 for f in dropped if f['status'] == 'rejected')} rejected by the gates"
+               + (f", {len(state.merged)} merged into another finding as duplicates." if state.merged else "."))
     if state.errors:
         out.append("Agent failures: " + "; ".join(_short(e) for e in state.errors))
-
-    def fix_label(fd: dict) -> str:
-        if fd["status"] == "unverifiable":
-            return "unverifiable, no fix"
-        fix = fd.get("fix")
-        if not fix:
-            return "no fix"
-        return "no verified fix" if fix["description"] == NO_VERIFIED_FIX else "verified fix"
 
     for severity in ("HIGH", "MEDIUM"):
         group = [f for f in shown if f["severity"] == severity]
@@ -230,7 +194,7 @@ def render_summary(state: ReviewState, *, findings_file: dict | None = None) -> 
         out += ["", f"## {severity}", ""]
         for fd in group:
             lines_ = f"{fd['line_start']}" if fd["line_start"] == fd["line_end"] else f"{fd['line_start']}-{fd['line_end']}"
-            out.append(f"- `{fd['file']}:{lines_}` — {_short(fd['claim'])} ({fix_label(fd)})")
+            out.append(f"- `{fd['file']}:{lines_}` — {_short(fd['claim'])} ({fd['status']})")
     if counts["LOW"]:
         out += ["", f"{counts['LOW']} LOW findings are in the full review."]
     if dropped:

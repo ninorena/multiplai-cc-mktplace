@@ -20,7 +20,21 @@ def test_fixture_validates():
     ff = load_findings(FIXTURE)
     assert [f.severity for f in ff.findings] == ["HIGH", "MEDIUM", "LOW"]
     assert [f.status for f in ff.findings] == ["confirmed", "unverifiable", "refuted"]
-    assert any(p.kind == "external" for p in ff.findings[0].fix.premises)
+    assert ff.findings[0].expected_behaviour.startswith("Items without a qty")
+    assert ff.findings[2].expected_behaviour is None  # refuted: nothing to expect
+
+
+def test_a_file_with_the_fix_older_reviews_wrote_still_loads():
+    data = fixture_data()
+    for f in data["findings"]:
+        del f["expected_behaviour"]
+        f["fix"] = None
+    data["findings"][0]["fix"] = {
+        "description": "Default the quantity to 1.", "patch_sketch": None, "open_questions": [],
+        "premises": [{"statement": "Items without qty mean one", "kind": "external", "citation": None}]}
+    ff = FindingsFile.model_validate(data)
+    assert ff.findings[0].fix.description == "Default the quantity to 1."
+    assert ff.findings[0].expected_behaviour is None
 
 
 def test_fixture_ids_are_stable_hashes():

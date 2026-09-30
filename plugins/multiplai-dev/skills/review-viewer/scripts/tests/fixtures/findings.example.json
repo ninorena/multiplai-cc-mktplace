@@ -42,30 +42,7 @@
         }
       ],
       "verdict_reason": "The base commit summed prices only; nothing in the diff adds qty to older callers.",
-      "fix": {
-        "description": "Default the quantity to 1 when it is missing.",
-        "patch_sketch": "return sum(i[\"price\"] * i.get(\"qty\", 1) for i in items)",
-        "premises": [
-          {
-            "statement": "Items without qty mean a quantity of one",
-            "kind": "external",
-            "citation": null
-          },
-          {
-            "statement": "total() is the only caller that reads qty",
-            "kind": "in_repo",
-            "citation": {
-              "path": "app/service.py",
-              "line_start": 8,
-              "line_end": 9,
-              "quote": "def total(items):"
-            }
-          }
-        ],
-        "open_questions": [
-          "Does the legacy checkout still exist in production?"
-        ]
-      }
+      "expected_behaviour": "Items without a qty are totalled as a quantity of one, as the base commit did."
     },
     {
       "id": "7ca6553fd7",
@@ -85,7 +62,7 @@
         }
       ],
       "verdict_reason": "The repository has no order constructor, so whether id is always set cannot be checked here.",
-      "fix": null
+      "expected_behaviour": "Refunding an order without an id logs the refund without raising."
     },
     {
       "id": "cebb020bdb",
@@ -105,7 +82,7 @@
         }
       ],
       "verdict_reason": "A negative discount as a surcharge is how the caller in the spec uses it; not a defect.",
-      "fix": null
+      "expected_behaviour": null
     }
   ]
 }

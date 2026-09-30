@@ -49,6 +49,8 @@ def complete(ff) -> dict:
             {"topic": "tests", "verdict": "concern", "title": "Refunds untested",
              "detail_md": "`refund()` has no test."},
         ],
+        "risk": {"tier": 3, "tier_why": "refunds move money", "revertable": True,
+                 "revert_why": "no migration or external call"},
         "complete": True,
     }
 
@@ -113,6 +115,13 @@ def test_rule4_complete_needs_every_file_and_finding(complete, ff):
     assert errors_for(complete, ff) == []
 
 
+def test_step_text_must_not_restate_a_finding(complete, ff):
+    complete["steps"][0]["body_md"] = f"**Finding {HIGH} (HIGH):** totals drop the quantity."
+    assert errors_for(complete, ff) == [
+        f"step totals: body_md names finding {HIGH}; the page shows linked findings under "
+        "the step, so explain the code instead"]
+
+
 def test_rule5_step_ids_are_unique(complete, ff):
     complete["steps"][1]["id"] = "totals"
     errs = errors_for(complete, ff)
@@ -134,6 +143,41 @@ def test_rule6_one_assessment_per_topic_except_other(complete, ff):
     complete["assessments"].append(dict(complete["assessments"][0]))
     assert errors_for(complete, ff) == [
         "assessment commits: more than one assessment has this topic"]
+
+
+def test_complete_needs_a_risk_block(complete, ff):
+    del complete["risk"]
+    assert errors_for(complete, ff) == ["walkthrough: complete is true but there is no 'risk' block"]
+    complete["complete"] = False
+    assert errors_for(complete, ff) == []
+
+
+def test_risk_tier_is_0_to_3(complete):
+    complete["risk"]["tier"] = 4
+    with pytest.raises(ValueError):
+        Walkthrough.model_validate(complete)
+
+
+def test_size_and_risk_topics_load_but_put_rejects_them(complete, ff):
+    complete["assessments"] += [
+        {"topic": "size", "verdict": "good", "title": "Small", "detail_md": "x"},
+        {"topic": "risk", "verdict": "note", "title": "Some", "detail_md": "x"}]
+    assert errors_for(complete, ff) == [
+        "assessment size: not an assessment topic any more (size is measured from git)",
+        "assessment risk: not an assessment topic any more (risk is scored from the `risk` block)"]
+
+
+def test_assessment_title_fits_one_line(complete, ff):
+    complete["assessments"][0]["title"] = "PR body is thorough; neither commit has a body"
+    assert errors_for(complete, ff) == [
+        "assessment commits: title is 46 characters, over 32; put the rest in detail_md"]
+    # A file written before 0.22 with a longer title still loads.
+    Walkthrough.model_validate(complete)
+
+
+def test_the_schema_advertises_the_title_limit_put_enforces():
+    schema = Walkthrough.model_json_schema()
+    assert schema["$defs"]["Assessment"]["properties"]["title"]["maxLength"] == walkthrough.TITLE_MAX
 
 
 def test_assessment_verdicts_and_topics_are_closed_sets(complete):

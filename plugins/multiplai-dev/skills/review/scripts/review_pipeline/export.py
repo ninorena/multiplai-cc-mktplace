@@ -10,6 +10,11 @@ and the pipeline's models carry more than it allows.
 | unverifiable (lowered severity kept) | `unverifiable` |
 | refuted                              | `refuted`      |
 | gate-rejected                        | `rejected`     |
+
+A finding merged into another by the merge stage is not exported: it is gone
+from `state.findings`, and the finding it went into carries its citations.
+`expected_behaviour` comes from the verifier and is written for confirmed and
+unverifiable findings only; a refuted or rejected finding has none.
 """
 
 from __future__ import annotations
@@ -19,7 +24,7 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .models import SEVERITIES, Citation, Finding, Fix, ReviewState
+from .models import SEVERITIES, Citation, Finding, ReviewState
 
 log = logging.getLogger(__name__)
 
@@ -41,24 +46,7 @@ def _citation(c: Citation) -> dict:
     return {"path": c.path, "line_start": c.line_start, "line_end": c.line_end, "quote": c.quote}
 
 
-def fix_to_v1(fix: Fix) -> dict:
-    questions = list(fix.open_questions)
-    for p in fix.premises:
-        if p.kind == "external" and p.question and p.question not in questions:
-            questions.append(p.question)
-    return {
-        "description": fix.description,
-        "patch_sketch": fix.patch_sketch,
-        "premises": [
-            {"statement": p.statement, "kind": p.kind,
-             "citation": _citation(p.citation) if p.citation else None}
-            for p in fix.premises
-        ],
-        "open_questions": questions,
-    }
-
-
-def _finding(f: Finding, status: str, reason: str | None, fix: Fix | None) -> dict:
+def _finding(f: Finding, status: str, reason: str | None, expected: str | None) -> dict:
     return {
         "id": f.id,
         "severity": f.severity,
@@ -70,7 +58,7 @@ def _finding(f: Finding, status: str, reason: str | None, fix: Fix | None) -> di
         "failure_scenario": f.failure_scenario,
         "citations": [_citation(c) for c in f.citations],
         "verdict_reason": reason,
-        "fix": fix_to_v1(fix) if fix else None,
+        "expected_behaviour": expected or None,
     }
 
 
@@ -81,8 +69,8 @@ def to_findings_file(state: ReviewState, *, generated_at: datetime | None = None
         verdict = state.verdicts.get(f.id)
         status = verdict.status if verdict else "unverifiable"
         reason = verdict.reason if verdict else "not verified"
-        fix = state.fixes.get(f.id) if status == "confirmed" else None
-        rows.append(_finding(f, status, reason, fix))
+        expected = verdict.expected_behaviour if verdict and status in ("confirmed", "unverifiable") else None
+        rows.append(_finding(f, status, reason, expected))
     rank = {s: i for i, s in enumerate(SEVERITIES)}
     order = {"confirmed": 0, "unverifiable": 1, "refuted": 2}
     rows.sort(key=lambda r: (order[r["status"]], rank[r["severity"]]))

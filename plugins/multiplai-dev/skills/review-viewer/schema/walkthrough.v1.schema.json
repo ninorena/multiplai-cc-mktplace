@@ -2,14 +2,14 @@
   "$defs": {
     "Assessment": {
       "additionalProperties": false,
-      "description": "The session's judgment on one quality question, shown as a badge beside\nthe measured ones. `commits` (do the messages and the PR description\nexplain the change?) and `tests` (is the new code tested?) are required\nonce the walkthrough is complete.",
+      "description": "The session's judgment on one quality question, shown as a badge beside\nthe measured ones. `commits` (does anything say why the change is made?)\nand `tests` (would a test fail if the changed behaviour broke?) are\nrequired once the walkthrough is complete, and judged by the rubric in\nSKILL.md. `size` and `risk` are accepted in files written before 0.22 but\nrejected by `walkthrough put`: size is measured and risk is the header\nscore.",
       "properties": {
         "detail_md": {
           "title": "Detail Md",
           "type": "string"
         },
         "title": {
-          "maxLength": 60,
+          "maxLength": 32,
           "minLength": 1,
           "title": "Title",
           "type": "string"
@@ -64,6 +64,40 @@
         "source"
       ],
       "title": "Diagram",
+      "type": "object"
+    },
+    "RiskInput": {
+      "additionalProperties": false,
+      "description": "The session's two judgments the risk score needs; the page applies the\nrules (see logic.js riskLevel). `tier` is how critical the most critical\nchanged code is, from the table in SKILL.md: 0 docs, tests and tooling;\n1 one feature; 2 a shared module or public interface; 3 auth, money, data\ndeletion or migration, shared infra, production deploy config. A repo's\n`.review-risk.toml`, read at the base commit, can raise it for the files\nit matches, never lower it.",
+      "properties": {
+        "revert_why": {
+          "minLength": 1,
+          "title": "Revert Why",
+          "type": "string"
+        },
+        "revertable": {
+          "title": "Revertable",
+          "type": "boolean"
+        },
+        "tier": {
+          "maximum": 3,
+          "minimum": 0,
+          "title": "Tier",
+          "type": "integer"
+        },
+        "tier_why": {
+          "minLength": 1,
+          "title": "Tier Why",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tier",
+        "tier_why",
+        "revertable",
+        "revert_why"
+      ],
+      "title": "RiskInput",
       "type": "object"
     },
     "Skipped": {
@@ -207,6 +241,17 @@
     "overview_md": {
       "title": "Overview Md",
       "type": "string"
+    },
+    "risk": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RiskInput"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "schema_version": {
       "const": 1,

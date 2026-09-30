@@ -52,9 +52,8 @@ def comment_body(findings_file: dict, chosen: list[dict]) -> str:
         out.append("")
         out.append(" ".join(f["failure_scenario"].split()))
         out.append("")
-        fix = f.get("fix")
-        if fix and fix.get("description") and fix["description"] != "no verified fix":
-            out.append(f"Suggested fix: {' '.join(fix['description'].split())}")
+        if f.get("expected_behaviour"):
+            out.append(f"Expected behaviour: {' '.join(f['expected_behaviour'].split())}")
             out.append("")
         c = f["citations"][0]
         out.append(link(web, t["head_sha"], c["path"], c["line_start"], c["line_end"]))

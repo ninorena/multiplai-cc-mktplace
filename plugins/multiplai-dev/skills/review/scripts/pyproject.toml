@@ -1,7 +1,7 @@
 [project]
 name = "review-pipeline"
 version = "0.1.0"
-description = "Code-review pipeline for the review skill: find, verify, prescribe, check, render — with citation gates enforced in code"
+description = "Code-review pipeline for the review skill: find, verify, merge, render — with citation gates enforced in code"
 requires-python = ">=3.12"
 dependencies = [
     # The [sdk] extra, not a bare pin: every model call goes through

@@ -5,28 +5,34 @@ import subprocess
 
 import pytest
 
-from conftest import CLAIM_HIGH, CLAIM_MEDIUM, CLAIM_REFUTED, CLAIM_REJECTED
+from conftest import CLAIM_HIGH, CLAIM_MEDIUM, CLAIM_REFUTED, CLAIM_REJECTED, EXPECTED_HIGH
 from review_pipeline import post as post_mod
 from review_pipeline.__main__ import main
 from review_pipeline.export import write_findings_file
-from review_pipeline.models import Fix, Premise
+from review_pipeline.models import Merged
 from review_pipeline.render import render_review, render_summary, write_review, write_rollups
 from review_pipeline.state import save_state
 
 
-def test_assumption_and_ask_appear_exactly_once(canned_state):
+def test_expected_behaviour_is_shown_and_no_fix_is(canned_state):
     text = render_review(canned_state)
-    assert text.count("Assumption:") == 1
-    assert text.count("Ask:") == 1
-    assert "Assumption: the Open Channel is titled DolceBot. Ask: What is the Open Channel titled in Channex?" in text
+    assert f"**Expected behaviour:** {EXPECTED_HIGH}" in text
+    assert text.count("**Expected behaviour:**") == 2  # the confirmed and the unverifiable finding
+    assert "**Fix:**" not in text and "Premises:" not in text
 
 
-def test_regression_external_premise_renders_as_assumption(canned_state):
-    fid = canned_state.findings[0].id
-    canned_state.fixes[fid] = Fix(finding_id=fid, description="d", premises=[
-        Premise(kind="external", statement="the Open Channel is titled DolceBot")])
+def test_merged_findings_are_listed_in_the_appendix_and_finders_on_the_survivor(canned_state):
+    high = canned_state.findings[0]
+    canned_state.findings[0] = high.model_copy(update={"finders": ["diff-bugs", "callers"]})
+    copy = high.with_location(claim="Rate plans match a literal keyword", finder="callers")
+    canned_state.merged.append(Merged(finding=copy, into=high.id,
+                                      reason=f"the same defect as {high.id} (rateplan_service.py:1): same literal"))
     text = render_review(canned_state)
-    assert "Assumption: the Open Channel is titled DolceBot." in text
+    assert "**Reported by:** diff-bugs, callers" in text
+    appendix = text.split("## Appendix — rejected, refuted and merged", 1)[1]
+    assert "**merged** (HIGH) `rateplan_service.py:1-1` — Rate plans match a literal keyword" in appendix
+    assert f"Merged into `{high.id}`: the same defect as {high.id}" in appendix
+    assert "1 merged into another finding as duplicates." in render_summary(canned_state)
 
 
 def test_header_and_sections(canned_state):
@@ -38,14 +44,13 @@ def test_header_and_sections(canned_state):
     assert "- **Files changed:** 3" in text
     assert f"### HIGH — rateplan_service.py:1 — {CLAIM_HIGH}" in text
     assert "unverifiable (lowered from MEDIUM)" in text
-    assert "Premises:" in text
 
 
 def test_citations_are_full_sha_github_links(canned_state):
     head = canned_state.target.head_sha
     text = render_review(canned_state)
     assert f"(https://github.com/example/booking-engine/blob/{head}/rateplan_service.py#L1-L1)" in text
-    assert f"(https://github.com/example/booking-engine/blob/{head}/direct_booking.py#L6-L6)" in text
+    assert f"(https://github.com/example/booking-engine/blob/{head}/rateplan_service.py#L6-L6)" in text
 
 
 def test_citations_without_github_remote_are_path_lines(canned_state):
@@ -55,7 +60,7 @@ def test_citations_without_github_remote_are_path_lines(canned_state):
 
 
 def test_appendix_lists_rejected_and_refuted_with_reasons(canned_state):
-    appendix = render_review(canned_state).split("## Appendix — rejected and refuted", 1)[1]
+    appendix = render_review(canned_state).split("## Appendix — rejected, refuted and merged", 1)[1]
     assert CLAIM_REFUTED in appendix and "line 5 sets the id" in appendix
     assert CLAIM_REJECTED in appendix and "quote not at cited lines" in appendix
     assert CLAIM_HIGH not in appendix
@@ -66,10 +71,10 @@ def test_summary_is_short_and_says_how_the_review_went(canned_state):
     lines = text.splitlines()
     assert len(lines) <= 25
     assert "Cost $1.25 over 9 agent calls." in text
-    assert "Findings: 1 HIGH, 0 MEDIUM, 1 LOW; 1 with a verified fix." in text
+    assert "Findings: 1 HIGH, 0 MEDIUM, 1 LOW. Dropped: 1 refuted" in text
     assert "1 refuted by the verifier, 1 rejected by the gates" in text
     (high_line,) = [l for l in lines if l.startswith("- `rateplan_service.py")]
-    assert high_line.endswith("(verified fix)")
+    assert high_line.endswith("(confirmed)")
     assert "1 LOW findings are in the full review." in text
     dropped = text.split("## Dropped", 1)[1]
     assert "refuted:" in dropped and CLAIM_REFUTED.split(". ")[0][:40] in dropped
@@ -162,6 +167,7 @@ def test_post_with_decisions_selects_exactly_the_accepted(pr_review, fake_gh, ca
     assert argv[1:4] == ["pr", "comment", "812"]
     assert body.count("\n1. ") == 1 and "\n2. " not in body
     assert CLAIM_HIGH in body and CLAIM_MEDIUM not in body
+    assert f"Expected behaviour: {EXPECTED_HIGH}" in body and "Suggested fix" not in body
     head = state.target.head_sha
     assert f"https://github.com/example/booking-engine/blob/{head}/rateplan_service.py#L1-L2" in body
     assert "posted 1 accepted findings to PR #812" in capsys.readouterr().out

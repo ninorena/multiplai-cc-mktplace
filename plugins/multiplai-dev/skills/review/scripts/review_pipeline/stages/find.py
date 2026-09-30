@@ -49,6 +49,7 @@ def _normalise(finding: Finding, dimension: str, target: TargetInfo, ctx: RunCon
         citations=[c.model_dump() for c in citations if c is not None],
         dimension="pre-existing" if finding.dimension == "pre-existing" else dimension,
         finder=dimension,
+        finders=[dimension],
     )
 
 
@@ -81,14 +82,17 @@ async def run_find(state: ReviewState, ctx: RunContext) -> ReviewState:
     if failures and len(failures) == len(cfg.dimensions):
         raise sdk.AgentCallError("every finder failed: " + "; ".join(failures))
 
-    seen: set[tuple[str, int, str]] = set()
+    seen: dict[tuple[str, int, str], Finding] = {}
     kept: list[Finding] = []
     for findings in per_dimension:
         for finding in findings:
             key = dedupe_key(finding)
             if key in seen:
+                first = seen[key]
+                if finding.finder not in first.finders:
+                    first.finders.append(finding.finder)
                 continue
-            seen.add(key)
+            seen[key] = finding
             result = finding_gate(target, finding)
             if result.passed:
                 kept.append(finding)

@@ -1,8 +1,13 @@
 """verify: one fresh agent per surviving finding, then `verdict_gate`.
 
-- confirmed → goes on to prescribe.
+- confirmed → stays in the review, and goes on to merge.
 - refuted → the appendix, with the verifier's reason.
 - unverifiable → stays in the review, severity lowered one step.
+
+A confirmed or unverifiable verdict should carry `expected_behaviour`. One
+without it (the verifier left it out, or the verifier failed) still stands,
+and the stage lists those findings in `state.errors`, so the summary says
+which ones reach the review with no statement of correct behaviour.
 """
 
 from __future__ import annotations
@@ -69,5 +74,11 @@ async def run_verify(state: ReviewState, ctx: RunContext) -> ReviewState:
 
     statuses = [state.verdicts[f.id].status for f in state.findings if f.id in state.verdicts]
     ctx.counts = {s: statuses.count(s) for s in ("confirmed", "refuted", "unverifiable")}
+    missing = [f.id for f in state.findings
+               if (v := state.verdicts.get(f.id)) and v.status != "refuted" and not v.expected_behaviour.strip()]
+    if missing:
+        ctx.counts["no_expected_behaviour"] = len(missing)
+        state.errors.append(f"verify: no expected behaviour for {len(missing)} finding"
+                            f"{'' if len(missing) == 1 else 's'} ({', '.join(missing)})")
     state.stage = "verify"
     return state

@@ -11,8 +11,10 @@ The thresholds are conventions, stated where they are defined.
 
 from __future__ import annotations
 
+import fnmatch
 import logging
 import re
+import tomllib
 from dataclasses import asdict, dataclass, field
 from pathlib import PurePosixPath
 
@@ -91,6 +93,10 @@ class ChangeStats:
     # {path: {"status": A|M|D|R|C|T, "added": int|None, "deleted": int|None}};
     # None counts for a binary file. Drives the file list's marks and counts.
     per_file: dict[str, dict] = field(default_factory=dict)
+    # {path: tier} for the changed files the repo's RISK_FILE matches, and why
+    # that file could not be used when it exists but is broken.
+    tiers: dict[str, int] = field(default_factory=dict)
+    tiers_error: str = ""
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -167,6 +173,61 @@ def read_commits(repo: str, base: str, head: str) -> list[dict]:
 def count_todos(diff: str) -> int:
     return sum(1 for line in diff.split("\n")
                if line.startswith("+") and not line.startswith("+++") and _TODO_RE.search(line))
+
+
+# --- criticality tiers from the repo --------------------------------------------
+
+# A repo may map paths to tiers (0-3, as in models.RiskInput) in this file at
+# its root, read at the base commit, so the change under review cannot set
+# its own tiers:
+#
+#   [tiers]
+#   "modules/*" = 3
+#   "docs/*" = 0
+#
+# Patterns are fnmatch globs, so `*` also matches `/`. A file that matches
+# several patterns gets the highest tier.
+RISK_FILE = ".review-risk.toml"
+
+
+def parse_tiers(text: str) -> dict[str, int]:
+    """The pattern → tier table from RISK_FILE's text. Raises ValueError with a
+    reason when the file is not valid."""
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        raise ValueError(f"not valid TOML: {exc}") from None
+    table = data.get("tiers")
+    if not isinstance(table, dict) or not table:
+        raise ValueError("needs a non-empty [tiers] table")
+    for pattern, tier in table.items():
+        if not isinstance(tier, int) or isinstance(tier, bool) or not 0 <= tier <= 3:
+            raise ValueError(f"tier for {pattern!r} must be a whole number from 0 to 3")
+    return dict(table)
+
+
+def match_tiers(table: dict[str, int], paths: list[str]) -> dict[str, int]:
+    """{path: highest matching tier} for the paths any pattern matches."""
+    out: dict[str, int] = {}
+    for path in paths:
+        hits = [tier for pattern, tier in table.items() if fnmatch.fnmatchcase(path, pattern)]
+        if hits:
+            out[path] = max(hits)
+    return out
+
+
+def repo_tiers(repo, base: str, paths: list[str]) -> tuple[dict[str, int], str]:
+    """(tiers of the matched paths, error) from RISK_FILE at `base`. No file is
+    not an error."""
+    try:
+        text = git(repo, "show", f"{base}:{RISK_FILE}")
+    except GitError:
+        return {}, ""
+    try:
+        return match_tiers(parse_tiers(text), paths), ""
+    except ValueError as exc:
+        log.warning("ignoring %s in %s: %s", RISK_FILE, repo, exc)
+        return {}, f"{RISK_FILE}: {exc}"
 
 
 # --- badges ------------------------------------------------------------------
@@ -301,6 +362,7 @@ def change_stats(target: Target, pr: dict | None = None) -> ChangeStats:
         s.added += a
         s.deleted += d or 0
     s.commits = read_commits(repo, base, head)
+    s.tiers, s.tiers_error = repo_tiers(repo, base, list(target.files_changed))
     s.todos_added = count_todos(git(repo, "diff", *_DIFF_FLAGS, "--unified=0", base, head))
     s.badges = [Badge("totals", f"{_plural(s.files, 'file')} · +{s.added} −{s.deleted}", "good",
                       ", ".join(f"{k} {v['files']} (+{v['added']} −{v['deleted']})"

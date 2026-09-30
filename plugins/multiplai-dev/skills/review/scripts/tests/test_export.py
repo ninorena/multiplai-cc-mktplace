@@ -4,7 +4,7 @@ import json
 
 import jsonschema
 
-from conftest import CLAIM_HIGH, CLAIM_MEDIUM, CLAIM_REFUTED, CLAIM_REJECTED, SCHEMA
+from conftest import CLAIM_HIGH, CLAIM_MEDIUM, CLAIM_REFUTED, CLAIM_REJECTED, EXPECTED_HIGH, EXPECTED_MEDIUM, SCHEMA
 from review_pipeline.export import plugin_version, to_findings_file, write_findings_file
 
 
@@ -29,15 +29,24 @@ def test_status_mapping(canned_state):
     assert by_claim[CLAIM_REJECTED]["status"] == "rejected"
     assert "quote not at cited lines" in by_claim[CLAIM_REJECTED]["verdict_reason"]
     assert by_claim[CLAIM_REJECTED]["citations"]  # rejected findings keep their citations
-    assert by_claim[CLAIM_REFUTED]["fix"] is None and by_claim[CLAIM_MEDIUM]["fix"] is None
+    assert "fix" not in by_claim[CLAIM_HIGH]
 
 
-def test_fix_drops_internal_fields_and_folds_questions(canned_state):
-    fix = next(f for f in to_findings_file(canned_state)["findings"] if f["claim"] == CLAIM_HIGH)["fix"]
-    assert fix["premises"][1] == {"statement": "the Open Channel is titled DolceBot", "kind": "external",
-                                  "citation": None}
-    assert "symbol" not in fix["premises"][0] and "question" not in fix["premises"][1]
-    assert fix["open_questions"] == ["What is the Open Channel titled in Channex?"]
+def test_expected_behaviour_only_for_shown_findings(canned_state):
+    by_claim = {f["claim"]: f for f in to_findings_file(canned_state)["findings"]}
+    assert by_claim[CLAIM_HIGH]["expected_behaviour"] == EXPECTED_HIGH
+    assert by_claim[CLAIM_MEDIUM]["expected_behaviour"] == EXPECTED_MEDIUM
+    assert by_claim[CLAIM_REFUTED]["expected_behaviour"] is None
+    assert by_claim[CLAIM_REJECTED]["expected_behaviour"] is None
+
+
+def test_a_merged_away_finding_is_not_exported(canned_state):
+    from review_pipeline.models import Merged
+
+    copy = canned_state.findings[0].with_location(claim="the same defect, reworded")
+    canned_state.merged.append(Merged(finding=copy, into=canned_state.findings[0].id, reason="r"))
+    ids = [f["id"] for f in to_findings_file(canned_state)["findings"]]
+    assert copy.id not in ids and canned_state.findings[0].id in ids
 
 
 def test_target_and_producer(canned_state):

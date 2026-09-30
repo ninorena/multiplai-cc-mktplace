@@ -320,9 +320,12 @@
 :root[data-theme="onebit"] .sev-h.HIGH, :root[data-theme="gameboy"] .sev-h.HIGH { background: var(--text); color: var(--bg); padding: 2px 6px; display: inline-block; }
 :root[data-theme="onebit"] .dot, :root[data-theme="gameboy"] .dot { background: var(--bg); border: 2px solid var(--text); }
 :root[data-theme="onebit"] .dot.HIGH, :root[data-theme="gameboy"] .dot.HIGH { background: var(--text); }
-:root[data-theme="onebit"] .qbadge.good, :root[data-theme="gameboy"] .qbadge.good { border: 2px solid var(--text); color: var(--text); }
-:root[data-theme="onebit"] .qbadge.note, :root[data-theme="gameboy"] .qbadge.note { border: 1px dashed var(--text); color: var(--text); }
-:root[data-theme="onebit"] .qbadge.concern, :root[data-theme="gameboy"] .qbadge.concern { background: var(--text); color: var(--bg); border-color: var(--text); }
+:root[data-theme="onebit"] .qbadge.good, :root[data-theme="gameboy"] .qbadge.good,
+:root[data-theme="onebit"] .risk-pill.good, :root[data-theme="gameboy"] .risk-pill.good { border: 2px solid var(--text); color: var(--text); }
+:root[data-theme="onebit"] .qbadge.note, :root[data-theme="gameboy"] .qbadge.note,
+:root[data-theme="onebit"] .risk-pill.note, :root[data-theme="gameboy"] .risk-pill.note { border: 1px dashed var(--text); color: var(--text); }
+:root[data-theme="onebit"] .qbadge.concern, :root[data-theme="gameboy"] .qbadge.concern,
+:root[data-theme="onebit"] .risk-pill.concern, :root[data-theme="gameboy"] .risk-pill.concern { background: var(--text); color: var(--bg); border-color: var(--text); }
 
 /* The theme menu's list (where the browser lets the page draw it). */
 :root[data-theme] .theme-pick select::picker(select) { border-width: 2px; box-shadow: 3px 3px 0 var(--shadow); }

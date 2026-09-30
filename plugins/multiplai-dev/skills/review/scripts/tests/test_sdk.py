@@ -62,7 +62,7 @@ async def test_read_only_tools_and_their_complement(trusted, fake_run):
 
 
 def test_every_stage_gets_only_read_grep_glob():
-    for tools in (sdk.FINDER_TOOLS, sdk.VERIFIER_TOOLS, sdk.PRESCRIBER_TOOLS, sdk.CHECKER_TOOLS):
+    for tools in (sdk.FINDER_TOOLS, sdk.VERIFIER_TOOLS, sdk.MERGER_TOOLS):
         assert tools == ["Read", "Grep", "Glob"]
 
 
@@ -90,7 +90,7 @@ async def test_failed_run_counts_as_a_failure_and_is_reasked(trusted, fake_run):
     RuntimeError.__init__(err, "boom")
     err.reason, err.stderr_tail, err.partial = "boom", "", None
     replies += [err, _result(json.dumps({"value": 1}))]
-    assert (await sdk.agent_call_structured("p", Answer, allowed_tools=sdk.CHECKER_TOOLS)).value == 1
+    assert (await sdk.agent_call_structured("p", Answer, allowed_tools=sdk.MERGER_TOOLS)).value == 1
     assert len(calls) == 2
 
 

@@ -22,13 +22,13 @@ The page-logic tests need `node`; they fail (not skip) without it.
 | `__main__.py` | CLI: `serve` (findings files, or `--target`), `reply`, `pending`, `list`, `stop`, `walkthrough put\|status`, `validate`, `export-schema`. Calls `setup_logging` once. Owns the stdout contract. `find_review()` looks for a review of the same commits. |
 | `models.py` | The `findings.json` v1 and `walkthrough.json` v1 pydantic models (source of truth for both files in `../schema/`), `finding_id()`, and the mailbox row models. |
 | `gitdata.py` | Git: `parse_target()` / `resolve_target()` (PR, branch, worktree, `a..b`, `a...b`; same base/head rules as `review_pipeline/target.py`, restated because that member is not importable here), `parse_unified()`, `file_view()`, `allowed_paths()`, `diff_target()`. Fixed argv, no shell, stdin closed. The only writes to a repo are the fetches named in `../SKILL.md`. |
-| `stats.py` | measured badges: `classify()` a path (lock, generated, test, docs, code), `change_stats()` from `git diff --numstat`, `--name-status` and `git log`, the size/tests/commits thresholds, PR badges, and `per_file` (status letter and line counts per changed file, for the file list). |
+| `stats.py` | measured badges: `classify()` a path (lock, generated, test, docs, code), `change_stats()` from `git diff --numstat`, `--name-status` and `git log`, the size/tests/commits thresholds, PR badges, `per_file` (status letter and line counts per changed file, for the file list), and `tiers` read from a repo's `.review-risk.toml` for the risk score. |
 | `walkthrough.py` | `check()` a walkthrough against the served target, `coverage()`, `put()` by atomic replace. |
 | `mailbox.py` | Append-only JSONL rows, `decisions.json` and `viewed.json` by atomic replace; the directory is 0700 and every file 0600. |
 | `server.py` | `ThreadingHTTPServer` subclass (`allow_reuse_address = False`), request checks, routes, idle watchdog. |
 | `registry.py` | Finds live viewers: probes each mailbox's recorded port with that mailbox's token, in parallel. A token is never sent to any other port. |
 | `netinfo.py` | Container detection (degradation contract rule 2), bind host, URLs to print. |
-| `static/` | `index.html`, `boot.js` (takes the token out of the address bar), `theme.js` (applies the saved theme and light/dark mode before first paint as `data-theme`/`data-mode`, fills the Theme menu, drives the mode button; saves choices in a cookie on the widest parent domain the browser accepts, so every viewer's port and container shares them, and exposes that store as `window.ReviewPrefs`), `logic.js` (pure functions, tested under node), `app.js`, `app.css` (every size from the tokens at its top), `themes.css` (every rule scoped to `html[data-theme]`), the bundled `font-*.woff2` and `FONTS-LICENSE.txt`. |
+| `static/` | `index.html`, `boot.js` (takes the token out of the address bar), `theme.js` (applies the saved theme and light/dark mode before first paint as `data-theme`/`data-mode`, fills the Theme menu, drives the mode button; saves choices in a cookie on the widest parent domain the browser accepts, so every viewer's port and container shares them, and exposes that store as `window.ReviewPrefs`), `logic.js` (pure functions, tested under node; `riskLevel` holds the risk rules), `app.js`, `app.css` (every size from the tokens at its top), `themes.css` (every rule scoped to `html[data-theme]`), the bundled `font-*.woff2` and `FONTS-LICENSE.txt`. |
 
 After changing `models.py`, run `python -m review_viewer export-schema` and
 commit both schemas; `test_models.py` fails while either differs.
@@ -98,13 +98,22 @@ at publish time and left in place — it holds no secret):
 5. Step ids are unique. (`skipped` paths must be changed files too.)
 6. At most one assessment per topic (except `other`); with `complete: true`,
    the `commits` and `tests` assessments exist.
+7. No step's `body_md` contains a loaded finding's id: the page shows each
+   linked finding in full under the step, so the text explains the code.
+8. No assessment uses the retired `size` or `risk` topics
+   (`RETIRED_TOPICS`); files written before 0.22 that use them still load.
+9. Every assessment title is at most `TITLE_MAX` (32) characters
+   (`models.ASSESSMENT_TITLE_MAX`, which the schema advertises).
+10. With `complete: true`, the `risk` block exists.
 
 Any failure → exit 2, every problem listed with its step id, nothing written.
 Otherwise the file is replaced atomically (0600). `GET
 /api/targets/<slug>/walkthrough` returns it (404 while absent); the page polls
 it, so a new walkthrough never restarts the server. `walkthrough status`
 prints the target's shas, what is not yet covered, the missing assessments,
-the measured badges and each commit's subject.
+the `risk:` block (or `missing`), the `repo tiers:` that `.review-risk.toml`
+at the base commit sets (or why it was ignored), the measured badges and
+each commit's subject.
 
 `/api/targets/<slug>` also returns `pr` (number, title, author, url, body,
 head/base ref, check counts, mergeable, draft, review decision — from the one

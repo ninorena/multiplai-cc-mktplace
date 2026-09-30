@@ -366,6 +366,72 @@
     return out;
   }
 
+  // --- the risk of merging -----------------------------------------------------
+
+  const TIER_NAMES = ["docs, tests or tooling", "one feature", "a shared module or interface",
+    "auth, money, data, shared infra or deploy config"];
+
+  /* The inputs to riskLevel, gathered from what the page has: the measured
+   * stats (size, PR checks, the repo's tier file), the walkthrough (the
+   * session's tier and revert judgment, the tests verdict) and the findings
+   * with their decisions. Null until the walkthrough has a risk block. A
+   * finding counts as open while it is confirmed and not rejected. The repo's
+   * tier file can only raise the session's tier, never lower it. */
+  function riskInputs(stats, walk, findings, decisions, changed) {
+    if (!walk || !walk.risk) return null;
+    const repoTiers = (stats && stats.tiers) || {};
+    const files = changed || [];
+    const matched = files.filter((p) => p in repoTiers).map((p) => repoTiers[p]);
+    const fileTier = matched.length ? Math.max.apply(null, matched) : -1;
+    const sessionTier = walk.risk.tier;
+    const tier = Math.max(fileTier, sessionTier);
+    const badge = (id) => ((stats && stats.badges) || []).find((b) => b.id === id);
+    const tests = ((walk.assessments || []).find((a) => a.topic === "tests") || {}).verdict || null;
+    const open = { HIGH: 0, MEDIUM: 0 };
+    for (const f of findings || []) {
+      const d = decisions && decisions[f.id];
+      if (f.status === "confirmed" && !(d && d.decision === "reject") && f.severity in open) open[f.severity] += 1;
+    }
+    const checks = badge("checks");
+    const size = badge("size");
+    return {
+      tier: tier,
+      tierWhy: fileTier > sessionTier ? "set by the repo's .review-risk.toml" : walk.risk.tier_why,
+      revertable: walk.risk.revertable,
+      revertWhy: walk.risk.revert_why,
+      tests: tests,
+      checksFailing: !!checks && checks.level === "concern",
+      large: !!size && size.level === "concern",
+      openHigh: open.HIGH,
+      openMedium: open.MEDIUM,
+    };
+  }
+
+  /* Low, Medium or High, and the rules that put it there. The first rule
+   * list that has any rule true wins; every true rule in it is a reason. */
+  function riskLevel(r) {
+    const n = (k, word) => k + " open " + word + " finding" + (k === 1 ? "" : "s");
+    const tierName = "tier " + r.tier + " (" + TIER_NAMES[r.tier] + ")";
+    const high = [
+      [r.openHigh > 0, n(r.openHigh, "HIGH")],
+      [r.tier === 3 && !r.revertable, tierName + " that a revert cannot undo"],
+      [r.tier === 3 && r.tests === "concern", tierName + " without tests"],
+      [r.checksFailing, "PR checks failing"],
+    ];
+    const medium = [
+      [r.tier === 3, tierName],
+      [r.tier === 2 && r.tests !== "good", tierName + (r.tests ? " with tests: " + r.tests : " with no tests verdict")],
+      [r.openMedium > 0, n(r.openMedium, "MEDIUM")],
+      [r.large, "a large diff"],
+      [!r.revertable, "a revert cannot undo it"],
+    ];
+    for (const [level, rules] of [["high", high], ["medium", medium]]) {
+      const why = rules.filter((x) => x[0]).map((x) => x[1]);
+      if (why.length) return { level: level, reasons: why };
+    }
+    return { level: "low", reasons: ["no rule for Medium or High applies"] };
+  }
+
   // --- @ references in questions ------------------------------------------------
 
   /* The contiguous run of added and deleted rows around row `ri`, as a line
@@ -741,6 +807,38 @@
     return next >= 0 && next < starts.length ? next : -1;
   }
 
+  /* The index in `starts` of the current block of changes. It is the block at
+   * row `ri` (the reference line), unless the pane cannot scroll far enough to
+   * bring the block last stepped to (starting at row `pinRow`) up to that line:
+   * `edge` says which ends the pane is against ({ top, bottom }), and a pinned
+   * block below the line at the bottom, or above it at the top, wins. */
+  function currentBlock(starts, ri, pinRow, edge) {
+    let pos = -1;
+    if (ri != null) for (let i = 0; i < starts.length; i++) if (starts[i] <= ri) pos = i;
+    const pin = pinRow == null ? -1 : starts.indexOf(pinRow);
+    if (pin < 0 || !edge) return pos;
+    if ((edge.bottom && pin > pos) || (edge.top && pin < pos)) return pin;
+    return pos;
+  }
+
+  /* The index in `starts` of the block `delta` away from the current one
+   * (see currentBlock); -1 when there is none. */
+  function stepCurrent(starts, ri, pinRow, edge, delta) {
+    const cur = currentBlock(starts, ri, pinRow, edge);
+    const pos = currentBlock(starts, ri, null, null);
+    if (cur === pos) {
+      if (ri == null) return -1;
+      const idx = stepBlock(starts, ri, delta);
+      // At the top of the pane, the start of the current block is above the
+      // reference line and already on screen: stepping back to it cannot
+      // scroll, so step to the block before it (or to none).
+      if (delta < 0 && edge && edge.top && idx === pos && idx >= 0) return pos > 0 ? pos - 1 : -1;
+      return idx;
+    }
+    const next = cur + delta;
+    return next >= 0 && next < starts.length ? next : -1;
+  }
+
   // --- the Go to palette -------------------------------------------------------------
 
   /* Entries whose text matches `query` as a subsequence, best first:
@@ -815,6 +913,8 @@
     chatQuestions: chatQuestions, chatStatus: chatStatus, refSpans: refSpans, mergeRef: mergeRef,
     tokens: tokens, wordDiff: wordDiff, changePairs: changePairs, markRanges: markRanges,
     splitLines: splitLines, oldNumbers: oldNumbers, enclosingScope: enclosingScope, stepBlock: stepBlock,
+    riskInputs: riskInputs, riskLevel: riskLevel, TIER_NAMES: TIER_NAMES,
+    currentBlock: currentBlock, stepCurrent: stepCurrent,
     paletteMatch: paletteMatch, viewedCount: viewedCount,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;

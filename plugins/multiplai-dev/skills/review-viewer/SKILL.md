@@ -166,6 +166,7 @@ as a JSON file following `schema/walkthrough.v1.schema.json`:
                   "detail_md": "…"},
                  {"topic": "tests", "verdict": "concern", "title": "refund() untested",
                   "detail_md": "…"}],
+ "risk": {"tier": 2, "tier_why": "…", "revertable": true, "revert_why": "…"},
  "complete": false}
 ```
 
@@ -195,19 +196,68 @@ Take `base_sha` and `head_sha` from `walkthrough status` (below).
   Draw top to bottom (`flowchart TD`) and keep it under about 8 nodes, so it
   fits without scrolling.
 - When findings are loaded, link each finding from the step where its code is
-  explained, and say in that step's text what is wrong and why.
+  explained, by its id in `finding_ids`. The page shows each linked finding in
+  full under the step, so the step's text explains the code and never restates
+  a finding: no finding ids, no "Finding …:" paragraphs. `put` rejects a step
+  whose text names a finding id.
 - The page shows the overview and, for a PR, its description on a
   **Summary** tab, under badges. The server measures some badges from git and
   GitHub: size, tests changed, commit hygiene, TODOs, lock files, and for a
   PR its checks, conflicts and review state. `walkthrough status` prints
   them, with each commit's subject. You add **assessments**, your judgment
-  as badges beside them. `commits` is required: do the commit messages and
-  the PR description say what changed and why? `tests` is also required: is
-  the new code tested, and what isn't? `size`, `design`, `risk` and `other`
-  are optional. `verdict` is `good`, `note` or `concern`. Keep `title`
-  under 60 characters and put the reasoning, with `path:line` citations, in
-  `detail_md`. The measured test badge counts lines, not coverage, so say
+  as badges beside them. An assessment judges only what git cannot measure:
+  never restate a measured badge (a missing commit body is already measured).
+  Pick the verdict from the rubric, not from impression, so two runs agree.
+  One assessment answers one question.
+
+  **`commits` (required): does anything say *why* the change is made?**
+  `good`: the PR description, or the commit bodies when there is no PR, says
+  what changed and why, covering every commit that changes behaviour.
+  `note`: the why is there but thin, or covers only part of the change.
+  `concern`: nothing says why, or the description contradicts the diff.
+
+  **`tests` (required): would a test fail if the changed behaviour broke?**
+  `good`: every changed behaviour has a test that exercises it.
+  `note`: the main path is tested and named edge or error paths are not; or
+  the code cannot be tested in this repo (infra, docs) and the change shows
+  another check that ran, such as a `terraform plan` output.
+  `concern`: a changed behaviour has no test exercising it and no other
+  check ran. The measured test badge counts lines, not coverage, so say
   what the tests actually exercise.
+
+  `design` and `other` are optional. `size` and `risk` are not assessments
+  (`put` rejects them): size is measured, and risk is the score below.
+  `title` is at most 32 characters and shows on one line; put the reasoning,
+  with `path:line` citations, in `detail_md`.
+- **Risk.** The page shows a Low / Medium / High risk of merging in its
+  header, computed by fixed rules from six inputs. Four are measured or
+  already written: size, PR checks, your `tests` verdict, and the confirmed
+  findings nobody rejected. You supply the other two in `risk`:
+
+  ```json
+  "risk": {"tier": 3, "tier_why": "shared Cloud Run module used by 5 services",
+           "revertable": false, "revert_why": "changes Terraform state"}
+  ```
+
+  `tier` is how critical the most critical changed code is. `3`: auth and
+  permissions, money, deleting or migrating data, infra shared by several
+  services, production deploy config. `2`: a shared library or module with
+  many callers, a public API or file format. `1`: code for one feature with
+  few callers. `0`: docs, tests, dev tooling. `revertable` is false when the
+  change runs a migration, deletes data or state, changes Terraform state, or
+  sends anything outside the system. A repo may set tiers in
+  `.review-risk.toml` at its root (`[tiers]` then `"modules/*" = 3`, fnmatch
+  globs, highest match wins). The file is read at the base commit, so the
+  change under review cannot edit its own tiers, and it can only raise your
+  tier, never lower it. `walkthrough status` lists the tiers it sets; judge
+  your tier from the whole change regardless. `risk` is required once the
+  walkthrough is complete.
+
+  The rules: **High** if a confirmed HIGH finding is open, tier 3 cannot be
+  reverted, tier 3 has a `tests` concern, or PR checks fail. Otherwise
+  **Medium** if tier 3, tier 2 without a `tests` good, a confirmed MEDIUM
+  finding is open, the diff is large, or it cannot be reverted. Otherwise
+  **Low**. A finding stays open until it is rejected in the page.
 - The steps show on a **Reviews** tab. Clicking a file opens the first step
   that anchors it, so anchor each step on every file it explains.
 - Publish early, then finish: `put` the overview and first steps with
@@ -223,9 +273,10 @@ uv run --directory ${CLAUDE_PLUGIN_ROOT}/skills/review-viewer/scripts \
 `status` prints the target's shas, the changed files no step covers and the
 findings no step links. `put` exits 2 and publishes nothing when a step
 anchors a file outside the diff, a line range past the end of the file, an
-unknown finding id, a duplicate step id, or — with `complete: true` — leaves
-a changed file uncovered, a confirmed or unverifiable finding unlinked, or
-the `commits` or `tests` assessment missing.
+unknown finding id, a step whose text names a finding id, a duplicate step id, a `size` or `risk` assessment, an
+assessment title over 32 characters, or — with `complete: true` — leaves
+a changed file uncovered, a confirmed or unverifiable finding unlinked,
+the `commits` or `tests` assessment missing, or no `risk` block.
 Each message names the step; fix the file and `put` again. The page picks up
 each `put` within seconds; the server is not restarted.
 

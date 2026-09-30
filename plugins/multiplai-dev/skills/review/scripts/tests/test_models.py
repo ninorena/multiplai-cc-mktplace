@@ -76,4 +76,11 @@ def test_lower_severity():
 def test_state_round_trips_and_orders_stages(canned_state):
     again = ReviewState.model_validate_json(canned_state.model_dump_json())
     assert again == canned_state
-    assert again.past("verify") and again.past("check_fix") and not again.past("export")
+    assert again.past("verify") and again.past("merge") and not again.past("export")
+
+
+def test_a_checkpoint_from_before_the_fix_stages_were_removed_resumes_at_merge(canned_state):
+    data = canned_state.model_dump(mode="json")
+    data.update(stage="check_fix", fixes={}, fix_checks={})
+    old = ReviewState.model_validate(data)
+    assert old.stage == "verify" and not old.past("merge")

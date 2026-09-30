@@ -221,8 +221,6 @@ def allowed_paths(target: Target, findings: FindingsFile | None) -> set[str]:
         for f in findings.findings:
             paths.add(f.file)
             paths.update(c.path for c in f.citations)
-            if f.fix:
-                paths.update(p.citation.path for p in f.fix.premises if p.citation)
     return paths
 
 

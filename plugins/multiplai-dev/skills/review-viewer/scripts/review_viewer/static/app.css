@@ -1,7 +1,7 @@
 /* review-viewer page styles.
  *
  * Every size comes from the tokens in the first block: spacing on a 4px
- * grid, four text sizes, two control heights, one corner radius. A rule
+ * grid, four text sizes, two control heights, the corner radii. A rule
  * that needs a number uses a token; the themes (themes.css) change colours,
  * faces and edges, never these. */
 
@@ -12,6 +12,8 @@
   --s3: 12px;
   --s4: 16px;
   --s5: 24px;
+  --fab-size: 48px;
+  --fab-clear: calc(var(--fab-size) + 2 * var(--s5));
   --s6: 32px;
   /* text */
   --fs-xs: 11px;
@@ -25,6 +27,9 @@
   --input-h: 36px;
   --radius: 6px;
   --radius-lg: 10px;
+  /* pill-shaped badges: the header risk pill and the Summary badges */
+  --pill-pad-x: 10px;
+  --radius-pill: 12px;
   /* motion */
   --t-fast: 120ms;
   --t-med: 180ms;
@@ -210,6 +215,12 @@ code { font: 0.92em var(--mono); }
 .top h1 { font-size: var(--fs-lg); line-height: 1.2; margin: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pr-info { font-size: var(--fs-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .pr-info .pr-title { font-weight: 600; }
+.risk-pill { flex-shrink: 0; font-size: var(--fs-sm); font-weight: 600; min-height: var(--ctl-h-sm); padding: 0 var(--pill-pad-x);
+  border-radius: var(--radius-pill); border: 1px solid var(--border); background: var(--bg); white-space: nowrap; }
+.risk-pill.good { border-color: var(--add-mark); color: var(--add-mark); }
+.risk-pill.note { border-color: var(--medium); color: var(--medium); }
+.risk-pill.concern { border-color: var(--del-mark); color: var(--del-mark); }
+.risk-pill.pending { color: var(--muted); font-weight: 400; }
 .pr-info a { color: var(--accent); margin-left: 6px; }
 .target-select { max-width: 40ch; }
 .top-tools { margin-left: auto; display: flex; align-items: center; gap: var(--s2); flex-shrink: 0; }
@@ -468,7 +479,6 @@ pre.sketch {
   padding: var(--s2);
   overflow: auto;
 }
-.assumption { color: var(--medium); font-weight: 600; }
 .toggle { display: flex; align-items: center; gap: 6px; margin: 0 0 var(--s3); color: var(--muted); font-size: var(--fs-sm); }
 
 .sev-h { margin: var(--s4) 0 6px; }
@@ -517,7 +527,8 @@ pre.sketch {
 .badges { display: flex; flex-direction: column; gap: var(--s3); margin-bottom: var(--s3); }
 .badge-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .badge-row .label { width: 100%; margin: 0 0 2px; }
-.qbadge { font-size: var(--fs-sm); min-height: 24px; padding: 0 10px; border-radius: 12px; border: 1px solid var(--border); background: var(--bg); }
+.qbadge { font-size: var(--fs-sm); min-height: 24px; padding: 0 var(--pill-pad-x); border-radius: var(--radius-pill); border: 1px solid var(--border); background: var(--bg);
+  max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .qbadge.good { border-color: var(--add-mark); color: var(--add-mark); }
 .qbadge.note { border-color: var(--medium); color: var(--medium); }
 .qbadge.concern { border-color: var(--del-mark); color: var(--del-mark); }
@@ -553,6 +564,8 @@ pre.sketch {
 /* Full size: a wide diagram scaled to the panel is unreadable, so the box scrolls. */
 img.diagram { display: block; max-width: none; background: var(--bg); }
 .finding-card { margin-top: var(--s1); }
+.step-finding { margin-top: var(--s2); }
+.step-finding-facts { margin: var(--s1) 0 0 var(--s2); padding-left: var(--s3); border-left: 2px solid var(--border); }
 
 /* --- markdown prose (overview, reviews, PR text, answers) ----------------------- */
 
@@ -663,9 +676,14 @@ pre:hover > .copy-btn, .copy-btn:focus-visible { opacity: 1; }
 .chat { flex: 1; min-height: 0; display: flex; flex-direction: column; outline: none;
   margin: 0 calc(-1 * var(--s3)) var(--s2); background: var(--panel); border-bottom: 1px solid var(--border); }
 
+/* The chat button floats over the bottom right of the page. Every pane under
+ * it ends in blank space as tall as the button, so its last lines can always
+ * be scrolled clear of it. */
+.detail::after, .code::after { content: ""; display: block; height: var(--fab-clear); }
+@media (max-width: 1000px) { .layout::after { content: ""; height: var(--fab-clear); } }
 .chat-fab-wrap { position: fixed; right: var(--s5); bottom: var(--s5); z-index: 25;
   display: flex; align-items: center; gap: var(--s2); }
-.chat-fab { position: relative; width: 48px; height: 48px; padding: 0; border-radius: 50%;
+.chat-fab { position: relative; width: var(--fab-size); height: var(--fab-size); padding: 0; border-radius: 50%;
   display: grid; place-items: center;
   background: var(--accent); border-color: var(--accent); color: var(--on-accent);
   box-shadow: var(--overlay-shadow); transition: transform var(--t-fast) var(--ease); }

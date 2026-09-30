@@ -30,7 +30,7 @@ DEFAULT_CALL_TIMEOUT_S = 1200.0
 DEFAULT_MAX_TURNS = 60
 
 READ_ONLY_TOOLS = ["Read", "Grep", "Glob"]
-FINDER_TOOLS = VERIFIER_TOOLS = PRESCRIBER_TOOLS = CHECKER_TOOLS = READ_ONLY_TOOLS
+FINDER_TOOLS = VERIFIER_TOOLS = MERGER_TOOLS = READ_ONLY_TOOLS
 
 # The deny-list is the complement of each call's allow-list within this
 # universe. Under bypassPermissions an allow-list alone removes nothing, so

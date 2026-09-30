@@ -4,12 +4,12 @@ Precedence, highest first (same order as buildme's config.py: the project's
 own file beats multiplai.conf, which beats the default):
 
 1. `review.yaml` in the output directory (`<out>/review.yaml`):
-   `concurrency`, `finder_model`, `verifier_model`, `prescriber_model`,
-   `checker_model`, `effort`, `max_turns`.
+   `concurrency`, `finder_model`, `verifier_model`, `merger_model`, `effort`,
+   `max_turns`.
 2. `multiplai.conf` keys `review_finder_model`, `review_verifier_model`,
-   `review_prescriber_model`, `review_effort` (the checker uses the verifier's).
+   `review_effort` (the merger uses the verifier's).
 3. Default: no model and no effort passed, so every stage runs on the
-   session's model. Verifiers and checkers still each get a fresh context.
+   session's model. Verifiers still each get a fresh context.
 """
 
 from __future__ import annotations
@@ -21,6 +21,8 @@ from pathlib import Path
 import yaml
 
 from multiplai_core.env import load_multiplai_conf
+
+from .budget import DEFAULT_MAX_USD
 
 log = logging.getLogger(__name__)
 
@@ -34,11 +36,10 @@ class ReviewConfig:
     concurrency: int = DEFAULT_CONCURRENCY
     finder_model: str | None = None
     verifier_model: str | None = None
-    prescriber_model: str | None = None
-    checker_model: str | None = None
+    merger_model: str | None = None
     effort: str | None = None
     max_turns: int = 60
-    max_cost_usd: float | None = 10.0
+    max_cost_usd: float | None = DEFAULT_MAX_USD
     dimensions: tuple[str, ...] = field(default=DIMENSIONS)
 
 
@@ -50,7 +51,7 @@ def _conf_value(conf: dict, key: str) -> str | None:
     return None
 
 
-def load_config(out_dir: Path | None, *, max_cost_usd: float | None = 10.0) -> ReviewConfig:
+def load_config(out_dir: Path | None, *, max_cost_usd: float | None = DEFAULT_MAX_USD) -> ReviewConfig:
     cfg = ReviewConfig(max_cost_usd=max_cost_usd)
     try:
         conf = load_multiplai_conf()
@@ -59,8 +60,7 @@ def load_config(out_dir: Path | None, *, max_cost_usd: float | None = 10.0) -> R
         conf = {}
     cfg.finder_model = _conf_value(conf, "review_finder_model")
     cfg.verifier_model = _conf_value(conf, "review_verifier_model")
-    cfg.checker_model = cfg.verifier_model
-    cfg.prescriber_model = _conf_value(conf, "review_prescriber_model")
+    cfg.merger_model = cfg.verifier_model
     cfg.effort = _conf_value(conf, "review_effort")
 
     yaml_path = (out_dir / "review.yaml") if out_dir else None
@@ -73,11 +73,11 @@ def load_config(out_dir: Path | None, *, max_cost_usd: float | None = 10.0) -> R
         if not isinstance(data, dict):
             log.warning("Ignoring %s: expected a mapping", yaml_path)
             data = {}
-        for key in ("finder_model", "verifier_model", "prescriber_model", "checker_model", "effort"):
+        for key in ("finder_model", "verifier_model", "merger_model", "effort"):
             if data.get(key):
                 setattr(cfg, key, str(data[key]))
-        if data.get("verifier_model") and not data.get("checker_model"):
-            cfg.checker_model = str(data["verifier_model"])
+        if data.get("verifier_model") and not data.get("merger_model"):
+            cfg.merger_model = str(data["verifier_model"])
         for key in ("concurrency", "max_turns"):
             if data.get(key) is not None:
                 try:

@@ -17,6 +17,61 @@ time, not derived from a tag.
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-09-30
+
+### Added
+- review-viewer: a **risk of merging** score (Low / Medium / High) in the page
+  header and at the top of the Summary tab. Fixed rules combine how critical
+  the changed code is, whether a revert can undo it, size, PR checks, the
+  tests verdict and the confirmed findings nobody rejected; the badge lists
+  the rules that fired and every input. It updates as findings are rejected.
+- review-viewer: an optional `.review-risk.toml` at a repo's root maps paths
+  to criticality tiers. It is read at the base commit, so a change cannot
+  edit its own tiers, and it can only raise the session's tier, never lower
+  it.
+- review-viewer: walkthroughs carry a `risk` block (tier, revertable, and the
+  reasons), required once complete.
+
+### Changed
+- review-viewer: the `commits` and `tests` assessments are judged by a fixed
+  rubric in SKILL.md, and an assessment no longer restates a measured badge.
+- review-viewer: assessment titles are at most 32 characters and badges no
+  longer wrap. `walkthrough put` rejects `size` and `risk` assessments;
+  walkthroughs written before 0.22.0 still load.
+- review: findings that describe the same defect are **merged**. After
+  verification, confirmed and unverifiable findings in the same file whose
+  lines overlap are grouped, and one agent per group decides which are the same
+  defect. The merged finding keeps the highest severity, every citation and
+  every finder that reported it ("Reported by" in the review); the findings
+  merged away are listed in the review's appendix with the finding they went
+  into. Before, only word-for-word copies were merged.
+- review: **no more proposed fixes.** The prescribe and check-fix stages are
+  gone. Each confirmed or unverifiable finding instead carries an **expected
+  behaviour**: one sentence from the verifier on what correct behaviour looks
+  like, without proposing code. It appears in the markdown review, in the
+  `post` PR comment (replacing "Suggested fix") and in `findings.json`.
+- review-viewer: a finding shows its **Expected behaviour** where the fix used
+  to be. Findings files from earlier reviews still open; their fixes are not
+  shown.
+- review: the default `--max-cost-usd` is **50** per target, up from 10.
+  A 52-file PR spent $25 in the find stage alone, and 10 stopped it before
+  any finding was verified.
+
+### Removed
+- review: the `prescriber_model` and `checker_model` keys in `review.yaml` and
+  `review_prescriber_model` in `multiplai.conf`. `merger_model` sets the model
+  of the new merge stage.
+
+### Fixed
+- review-viewer: a walkthrough step no longer restates its findings in its
+  text; the page already shows them in full under the step. `walkthrough put`
+  rejects a step whose text names a finding id.
+- review-viewer: the change arrows (▲ ▼) reach every change in a file. Near
+  the end of a file, or when the whole file fits on screen, Next used to stay
+  on the same change and never turned off.
+- review-viewer: the chat button no longer covers the last lines of the
+  right-hand panel or the code; both end in space you can scroll clear of it.
+
 ## [0.21.0] - 2026-09-29
 
 ### Added

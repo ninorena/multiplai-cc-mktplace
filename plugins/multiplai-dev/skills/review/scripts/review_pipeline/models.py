@@ -15,15 +15,18 @@ from __future__ import annotations
 import hashlib
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 Severity = Literal["HIGH", "MEDIUM", "LOW"]
 SEVERITIES: tuple[str, ...] = ("HIGH", "MEDIUM", "LOW")
 
 # Stage names in run order. `ReviewState.stage` holds the last one completed.
 STAGES: tuple[str, ...] = (
-    "target", "find", "verify", "prescribe", "check_fix", "export", "render", "done",
+    "target", "find", "verify", "merge", "export", "render", "done",
 )
+# Stages a checkpoint written before 0.22 can name. Both ran after verify, so
+# a resumed review of that age continues with merge.
+_REMOVED_STAGES = {"prescribe": "verify", "check_fix": "verify"}
 
 
 def finding_id(file: str, line_start: int, claim: str) -> str:
@@ -72,6 +75,9 @@ class Finding(_Model):
     failure_scenario: str
     citations: list[Citation] = Field(min_length=1)
     finder: str = ""
+    # Every finder that reported this defect: the first one, then any whose
+    # finding was dropped as a word-for-word copy or merged into this one.
+    finders: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _compute_id(self) -> "Finding":
@@ -88,40 +94,20 @@ class Verdict(_Model):
     status: Literal["confirmed", "refuted", "unverifiable"]
     reason: str
     citations: list[Citation] = Field(default_factory=list)  # the verifier's own re-reads
+    # What correct behaviour looks like, in one sentence, without proposing a
+    # code change. Exported on the finding as `expected_behaviour`.
+    expected_behaviour: str = ""
 
 
-class Premise(_Model):
-    statement: str
-    kind: Literal["in_repo", "external"]
-    citation: Citation | None = None
-    symbol: str | None = None
-    # For an external premise: what to ask the developer. Rendered as
-    # "Ask: …"; not part of the v1 Premise, so export folds it into
-    # Fix.open_questions.
-    question: str | None = None
-
-
-class Fix(_Model):
-    finding_id: str = ""
-    description: str
-    premises: list[Premise] = Field(default_factory=list)
-    patch_sketch: str | None = None
-    open_questions: list[str] = Field(default_factory=list)
-
-
-NO_VERIFIED_FIX = "no verified fix"
-
-
-class FixCheck(_Model):
-    finding_id: str = ""
-    status: Literal["confirmed", "refuted"]
-    reason: str
+class DuplicateSet(_Model):
+    finding_ids: list[str]
+    reason: str = ""
 
 
 class GateResult(BaseModel):
     passed: bool
     reason: str = ""
-    action: str = ""  # "keep" | "reject" | "downgrade" | "reask" — what the caller does on failure
+    action: str = ""  # "keep" | "reject" | "downgrade" — what the caller does on failure
 
 
 class TargetInfo(BaseModel):
@@ -147,17 +133,31 @@ class Rejected(BaseModel):
     stage: str = "find"
 
 
+class Merged(BaseModel):
+    """A finding folded into another that describes the same defect."""
+    finding: Finding
+    into: str  # the id of the finding it was merged into
+    reason: str
+
+
 class ReviewState(BaseModel):
     target: TargetInfo
     stage: str = "target"  # last stage completed
     findings: list[Finding] = Field(default_factory=list)
     verdicts: dict[str, Verdict] = Field(default_factory=dict)  # by finding id
-    fixes: dict[str, Fix] = Field(default_factory=dict)  # by finding id
-    fix_checks: dict[str, FixCheck] = Field(default_factory=dict)
     rejected: list[Rejected] = Field(default_factory=list)
+    merged: list[Merged] = Field(default_factory=list)
+    # The merge agent's answer per group of overlapping findings, keyed by the
+    # group's sorted ids, so a resumed merge stage asks no group twice.
+    merge_answers: dict[str, list[DuplicateSet]] = Field(default_factory=dict)
     original_severity: dict[str, str] = Field(default_factory=dict)  # lowered findings only
     errors: list[str] = Field(default_factory=list)  # agent failures, shown in the review header
     budget: dict = Field(default_factory=dict)
+
+    @field_validator("stage", mode="before")
+    @classmethod
+    def _removed_stage(cls, value: str) -> str:
+        return _REMOVED_STAGES.get(value, value)
 
     def past(self, stage: str) -> bool:
         """Whether *stage* has already completed."""
@@ -169,3 +169,7 @@ class ReviewState(BaseModel):
 
 class FinderOutput(_Model):
     findings: list[Finding] = Field(default_factory=list)
+
+
+class MergeOutput(_Model):
+    duplicate_sets: list[DuplicateSet] = Field(default_factory=list)

@@ -10,7 +10,8 @@ from . import CITATION_RULES, JSON_ONLY, workspace_block
 SCHEMA = """\
 {"status": "confirmed" | "refuted" | "unverifiable",
  "reason": "what you read and why it settles the question",
- "citations": [{"path": "...", "line_start": 1, "line_end": 1, "quote": "exact text"}]}"""
+ "citations": [{"path": "...", "line_start": 1, "line_end": 1, "quote": "exact text"}],
+ "expected_behaviour": "one sentence: what correct behaviour would be"}"""
 
 
 def build(target: TargetInfo, finding: Finding) -> str:
@@ -31,6 +32,9 @@ def build(target: TargetInfo, finding: Finding) -> str:
         "vendor's configuration, runtime values) or the code does not settle it. Say what is missing.\n"
         "A `confirmed` answer without a citation that a program can find at the cited lines is "
         "recorded as `unverifiable`.",
+        "Unless you answer `refuted`, set `expected_behaviour`: state what correct behaviour would be, in "
+        "one sentence, without proposing a code change. For example: \"A null timeout is rejected, not "
+        "skipped.\" Say what the code should do, not how to change it.",
         CITATION_RULES,
         f"Schema:\n{SCHEMA}",
         JSON_ONLY,

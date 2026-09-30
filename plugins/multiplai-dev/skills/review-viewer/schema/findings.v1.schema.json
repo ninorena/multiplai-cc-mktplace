@@ -46,6 +46,18 @@
           "title": "Claim",
           "type": "string"
         },
+        "expected_behaviour": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expected Behaviour"
+        },
         "failure_scenario": {
           "title": "Failure Scenario",
           "type": "string"

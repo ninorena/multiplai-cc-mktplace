@@ -24,6 +24,8 @@ import os
 import sys
 from pathlib import Path
 
+from .budget import DEFAULT_MAX_USD
+
 log = logging.getLogger("review_pipeline")
 
 SUBCOMMANDS = ("review", "batch", "rollup", "resume", "post")
@@ -56,8 +58,8 @@ def _trust_flag(p: argparse.ArgumentParser) -> None:
 
 
 def _budget_flag(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--max-cost-usd", type=float, default=10.0,
-                   help="Circuit breaker per target, in USD (default 10; 0 = no ceiling).")
+    p.add_argument("--max-cost-usd", type=float, default=DEFAULT_MAX_USD,
+                   help=f"Circuit breaker per target, in USD (default {DEFAULT_MAX_USD:g}; 0 = no ceiling).")
 
 
 def build_parser() -> argparse.ArgumentParser:

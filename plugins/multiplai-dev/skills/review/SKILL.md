@@ -1,6 +1,6 @@
 ---
 name: review
-description: Reviews a branch, PR or commit range with a Python pipeline that finds, verifies, prescribes fixes for, and checks review findings, rejecting in code any finding or fix whose cited lines are not at the reviewed commit. Writes a markdown review, severity rollups and a findings.json, then opens the findings in review-viewer.
+description: Reviews a branch, PR or commit range with a Python pipeline that finds, verifies and merges duplicate review findings, rejecting in code any finding whose cited lines are not at the reviewed commit. Writes a markdown review, severity rollups and a findings.json, then opens the findings in review-viewer.
 when_to_use: 'Triggers: review this branch, review PR, deep review, /multiplai-dev:review'
 model: opus
 effort: medium
@@ -14,19 +14,24 @@ Python between them:
 1. **find** — five finders, one per aspect (`diff-bugs`, `callers`, `history`,
    `conventions`, `tests`). Every finding cites lines with an exact quote.
 2. **verify** — a fresh agent per finding re-reads the code and answers
-   `confirmed`, `refuted` or `unverifiable`, citing what it read.
-3. **prescribe** — a fix per confirmed finding. Every fact the fix depends on
-   is a premise: an in-repo premise cites lines, and a premise about what a
-   setting, constant or environment variable means cites a line that *uses*
-   it. A premise about anything outside the repo is an assumption, with a
-   question for the developer.
-4. **check_fix** — a fresh agent per fix asks whether anything that consumes
-   the cited symbols, or calls the changed lines, breaks.
+   `confirmed`, `refuted` or `unverifiable`, citing what it read. Unless it
+   refutes the finding, it also says in one sentence what correct behaviour
+   would be (the finding's **expected behaviour**), without proposing a code
+   change.
+3. **merge** — the finders work independently, so one defect is often
+   reported several times in different words. Confirmed and unverifiable
+   findings in the same file whose lines overlap (or come within two lines) are
+   grouped, and one agent per group says which describe the same defect. Each
+   such set becomes one finding with the highest severity, every citation and
+   every finder that reported it. The findings merged away are listed in the
+   review's appendix with the finding they went into.
+
+The review proposes no fixes. Fixing a finding is a separate step that
+changes the code and runs the tests.
 
 The gates re-read every cited line range with `git show <head>:<path>` and
-check the quote is there. A finding that fails is rejected; a fix that fails
-is re-asked once, then replaced by "no verified fix" and an open question. The
-gates never ask a model.
+check the quote is there. A finding that fails is rejected; a confirmation
+that fails is recorded as `unverifiable`. The gates never ask a model.
 
 ## What this skill does on the machine
 
@@ -35,7 +40,7 @@ gates never ask a model.
   agent gets a shell, file edits, or web access. This is why it needs
   `--trust-repo`: the repo's own text becomes part of what the model acts on.
 - **Reads git history** of the reviewed repository (`git rev-parse`,
-  `git diff`, `git log`, `git show`, `git grep`, `git archive`). It never
+  `git diff`, `git log`, `git show`, `git archive`). It never
   checks out, merges, commits or writes to it, and fetches only with
   `--fetch`.
 - **Uses the network** only through the model calls, and through the GitHub
@@ -102,7 +107,7 @@ background task's own completion notice also ends the wait.
 Exit codes: `0` done; `1` a batch target or every finder failed (the message
 says which); `2` bad input or a target that does not resolve (no output is
 written); `3` repository not trusted; `4` the budget circuit breaker stopped
-the run at `--max-cost-usd` (default 10 per target). On `4`, report the spend
+the run at `--max-cost-usd` (default 50 per target). On `4`, report the spend
 and the partial state; resume only if the user raises the ceiling:
 `python -m review_pipeline resume <out>/<slug> --trust-repo --max-cost-usd <n>`.
 
@@ -110,7 +115,7 @@ and the partial state; resume only if the user raises the ceiling:
 
 Each finished target prints a `summary: <path>` line. Read each
 `summary-<slug>.md` and paste it into chat as it is: it is about 20 lines, with
-the cost, the severity counts, one line per HIGH and MEDIUM finding with its fix
+the cost, the severity counts, one line per HIGH and MEDIUM finding with its
 status, and one line per finding that was dropped and why. Then give the output
 directory. Do not paste `review-<slug>.md`; the viewer shows the full findings.
 
@@ -149,8 +154,7 @@ exits 2 when the target is not a PR or the decisions file is missing.
   `LOW-only.md` in `--out` from the given files (default: every
   `<out>/*/findings.json`).
 - `review.yaml` in the output directory sets `concurrency`, `finder_model`,
-  `verifier_model`, `prescriber_model`, `checker_model`, `effort` and
+  `verifier_model`, `merger_model` (default: the verifier's), `effort` and
   `max_turns`. `multiplai.conf` keys `review_finder_model`,
-  `review_verifier_model`, `review_prescriber_model` and `review_effort` apply
-  when the file does not set them. By default every stage runs on the session's
-  model.
+  `review_verifier_model` and `review_effort` apply when the file does not set
+  them. By default every stage runs on the session's model.

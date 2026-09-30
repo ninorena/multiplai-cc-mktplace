@@ -469,6 +469,48 @@ test("stepBlock moves between blocks of changes", () => {
   assert.equal(L.stepBlock([], 3, 1), -1);
 });
 
+test("currentBlock keeps a block the pane cannot scroll up to the reference line", () => {
+  const starts = [5, 20, 40];
+  const mid = { top: false, bottom: false };
+  const bottom = { top: false, bottom: true };
+  const top = { top: true, bottom: false };
+  // Away from the ends, the reference line decides.
+  assert.equal(L.currentBlock(starts, 25, 40, mid), 1);
+  assert.equal(L.currentBlock(starts, 2, null, top), -1);
+  // At the bottom, the last block stepped to wins even though row 40 never
+  // reaches the line.
+  assert.equal(L.currentBlock(starts, 25, 40, bottom), 2);
+  // At the top, a block above the line wins the same way.
+  assert.equal(L.currentBlock(starts, 25, 5, top), 0);
+  // A pin behind the line in the wrong direction is ignored.
+  assert.equal(L.currentBlock(starts, 25, 5, bottom), 1);
+  // A pin that is no longer a block start is ignored.
+  assert.equal(L.currentBlock(starts, 25, 41, bottom), 1);
+});
+
+test("stepCurrent steps on from a pinned block at the end of the scroll range", () => {
+  const starts = [5, 20, 40];
+  const bottom = { top: false, bottom: true };
+  const both = { top: true, bottom: true };
+  // The reference line is stuck in block 1; Next reaches 2, then stops.
+  assert.equal(L.stepCurrent(starts, 25, null, bottom, 1), 2);
+  assert.equal(L.stepCurrent(starts, 25, 40, bottom, 1), -1);
+  assert.equal(L.stepCurrent(starts, 25, 40, bottom, -1), 1);
+  // A file that fits on screen: every block is reachable with Next and Prev.
+  assert.equal(L.stepCurrent(starts, 6, 20, both, 1), 2);
+  assert.equal(L.stepCurrent(starts, 21, 5, both, 1), 1);
+  assert.equal(L.stepCurrent(starts, 21, 5, both, -1), -1);
+  // Without a pin it behaves like stepBlock.
+  assert.equal(L.stepCurrent(starts, 25, null, { top: false, bottom: false }, -1), 1);
+  // At the top, the current block's start is already on screen above the
+  // reference line: Prev goes to the block before it, and there is none
+  // before the first, so Prev is disabled there.
+  const top = { top: true, bottom: false };
+  assert.equal(L.stepCurrent([1, 20, 40], 3, null, top, -1), -1);
+  assert.equal(L.stepCurrent([1, 5, 40], 7, null, top, -1), 0);
+  assert.equal(L.stepCurrent([1, 20, 40], 3, null, top, 1), 1);
+});
+
 test("paletteMatch ranks prefix, then substring, then scattered letters", () => {
   const e = [{ label: "server.py", sub: "review_viewer" }, { label: "observer.js", sub: "static" },
     { label: "setup_rv.sh", sub: "scripts" }, { label: "app.js", sub: "static/server" }];
@@ -482,6 +524,60 @@ test("paletteMatch ranks prefix, then substring, then scattered letters", () => 
 test("viewedCount counts only files in the change", () => {
   assert.deepEqual(L.viewedCount(["a", "b", "c"], { a: "t", gone: "t" }), { done: 1, total: 3 });
   assert.deepEqual(L.viewedCount(["a"], null), { done: 0, total: 1 });
+});
+
+const RISK_BASE = { tier: 1, tierWhy: "", revertable: true, revertWhy: "", tests: "good",
+  checksFailing: false, large: false, openHigh: 0, openMedium: 0 };
+const risk = (over) => L.riskLevel(Object.assign({}, RISK_BASE, over));
+
+test("riskLevel is Low when no rule applies", () => {
+  assert.deepEqual(risk({}), { level: "low", reasons: ["no rule for Medium or High applies"] });
+  assert.equal(risk({ tier: 2 }).level, "low");
+});
+
+test("riskLevel High rules", () => {
+  assert.deepEqual(risk({ openHigh: 2 }).reasons, ["2 open HIGH findings"]);
+  assert.equal(risk({ tier: 3, revertable: false }).level, "high");
+  assert.equal(risk({ tier: 3, tests: "concern" }).level, "high");
+  assert.equal(risk({ checksFailing: true }).level, "high");
+  // Every true High rule is a reason; Medium rules are not listed.
+  assert.deepEqual(risk({ tier: 3, revertable: false, tests: "concern", openMedium: 1 }).reasons, [
+    "tier 3 (auth, money, data, shared infra or deploy config) that a revert cannot undo",
+    "tier 3 (auth, money, data, shared infra or deploy config) without tests"]);
+});
+
+test("riskLevel Medium rules", () => {
+  assert.equal(risk({ tier: 3 }).level, "medium");
+  assert.equal(risk({ tier: 2, tests: "note" }).level, "medium");
+  assert.equal(risk({ tier: 2, tests: null }).level, "medium");
+  assert.deepEqual(risk({ openMedium: 1 }).reasons, ["1 open MEDIUM finding"]);
+  assert.deepEqual(risk({ large: true }).reasons, ["a large diff"]);
+  assert.deepEqual(risk({ revertable: false }).reasons, ["a revert cannot undo it"]);
+});
+
+test("riskInputs combines the repo tiers, the session's tier and the findings", () => {
+  const walk = { risk: { tier: 1, tier_why: "one feature", revertable: true, revert_why: "x" },
+    assessments: [{ topic: "tests", verdict: "note" }] };
+  const stats = { tiers: { "infra/main.tf": 3 },
+    badges: [{ id: "size", level: "concern" }, { id: "checks", level: "good" }] };
+  const findings = [
+    { id: "a", status: "confirmed", severity: "HIGH" },
+    { id: "b", status: "confirmed", severity: "HIGH" },
+    { id: "c", status: "refuted", severity: "MEDIUM" },
+    { id: "d", status: "confirmed", severity: "MEDIUM" },
+  ];
+  const r = L.riskInputs(stats, walk, findings, { b: { decision: "reject" }, a: { decision: "accept" } },
+    ["infra/main.tf", "app.py"]);
+  assert.deepEqual(r, { tier: 3, tierWhy: "set by the repo's .review-risk.toml", revertable: true,
+    revertWhy: "x", tests: "note", checksFailing: false, large: true, openHigh: 1, openMedium: 1 });
+  // The file only raises the tier: covering every changed file with a lower
+  // tier leaves the session's tier and reason in place.
+  const low = L.riskInputs({ tiers: { "a.md": 0 } }, walk, [], {}, ["a.md"]);
+  assert.equal(low.tier, 1);
+  assert.equal(low.tierWhy, "one feature");
+  // With no file the session decides, and its reason is shown.
+  assert.equal(L.riskInputs({}, walk, [], {}, ["app.py"]).tierWhy, "one feature");
+  assert.equal(L.riskInputs({}, { assessments: [] }, [], {}, []), null);
 });
 
 let failed = 0;

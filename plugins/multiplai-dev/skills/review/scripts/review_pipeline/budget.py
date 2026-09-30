@@ -15,7 +15,9 @@ from dataclasses import dataclass, field
 
 log = logging.getLogger(__name__)
 
-DEFAULT_MAX_USD = 10.0
+# Per target. Past reviews spent $1-11 for up to 18 changed files, and $60 for
+# 52; the finders cost about $0.40-0.50 per changed file on the larger ones.
+DEFAULT_MAX_USD = 50.0
 WARN_FRACTION = 0.8
 
 

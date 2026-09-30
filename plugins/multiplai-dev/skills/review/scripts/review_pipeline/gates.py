@@ -2,7 +2,7 @@
 
 Each gate takes the `TargetInfo` and the object it judges and returns a
 `GateResult`. Everything they check is re-read from the target's head commit
-with `git show` / `git grep`, never taken from what an agent said it read.
+with `git show`, never taken from what an agent said it read.
 
 Names must not start with `test`, or pytest collects them.
 """
@@ -11,18 +11,12 @@ from __future__ import annotations
 
 import functools
 import logging
-import re
 import subprocess
 
-from .models import SEVERITIES, Citation, Finding, Fix, GateResult, Premise, TargetInfo, Verdict
+from .models import SEVERITIES, Citation, Finding, GateResult, TargetInfo, Verdict
 from .target import _GIT, _env
 
 log = logging.getLogger(__name__)
-
-# How a premise's statement names a settings key, constant or env var when the
-# model left `symbol` blank.
-SYMBOL_RE = re.compile(r"\b[A-Z][A-Z0-9_]{3,}\b")
-MAX_CONSUMERS_IN_REASON = 5
 
 
 def _normalise(text: str) -> str:
@@ -106,131 +100,3 @@ def verdict_gate(target: TargetInfo, verdict: Verdict) -> GateResult:
         reasons.append(f"{citation.path}:{citation.line_start}: {result.reason}")
     return GateResult(passed=False, action="downgrade",
                       reason="verifier confirmed, but none of its citations reproduce (" + "; ".join(reasons) + ")")
-
-
-# --- premises -----------------------------------------------------------------
-
-
-def premise_gate(target: TargetInfo, premise: Premise) -> GateResult:
-    """`in_repo` needs a citation that reproduces; `external` must carry none."""
-    if premise.kind == "external":
-        if premise.citation is not None:
-            return GateResult(passed=False, action="reask",
-                              reason="an external premise must not carry a citation")
-        return GateResult(passed=True)
-    if premise.citation is None:
-        return GateResult(passed=False, action="reask",
-                          reason="an in-repo premise must cite the lines that establish it")
-    result = citation_gate(target, premise.citation)
-    if not result.passed:
-        return GateResult(passed=False, action="reask", reason=f"premise citation: {result.reason}")
-    return GateResult(passed=True)
-
-
-@functools.lru_cache(maxsize=256)
-def _grep(repo: str, sha: str, symbol: str) -> tuple[tuple[str, int, str], ...]:
-    """(path, line, text) for every whole-word hit of *symbol* at *sha*."""
-    proc = subprocess.run(
-        [*_GIT, "-C", repo, "grep", "-n", "-w", "--null", "-I", "-F", "-e", symbol, sha],
-        capture_output=True, stdin=subprocess.DEVNULL, env=_env(), shell=False, check=False,
-    )
-    hits = []
-    prefix = f"{sha}:"
-    for raw in proc.stdout.decode("utf-8", errors="replace").splitlines():
-        parts = raw.split("\0", 2)
-        if len(parts) != 3:
-            continue
-        path, lineno, text = parts
-        if path.startswith(prefix):
-            path = path[len(prefix):]
-        try:
-            hits.append((path, int(lineno), text))
-        except ValueError:
-            continue
-    return tuple(hits)
-
-
-def is_definition(symbol: str, line: str) -> bool:
-    """A line that defines *symbol* rather than using it."""
-    s = re.escape(symbol)
-    if re.match(rf"^\s*{s}\s*[:=]", line):
-        return True
-    return bool(re.search(rf"""(?:config|getenv)\(\s*['"]{s}['"]""", line))
-
-
-def symbol_hits(target: TargetInfo, symbol: str) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
-    """(definitions, uses) of *symbol* at head, each as (path, line)."""
-    definitions, uses = [], []
-    for path, lineno, text in _grep(target.repo_path, target.head_sha, symbol):
-        (definitions if is_definition(symbol, text) else uses).append((path, lineno))
-    return definitions, uses
-
-
-def premise_symbols(target: TargetInfo, premise: Premise) -> list[str]:
-    """The symbols the consumer gate applies to: settings keys, constants, env vars.
-
-    Those are UPPER_CASE (`SYMBOL_RE`). An explicit `premise.symbol` in any
-    other shape — a function, a variable, a field — is not one: a premise
-    about what a function does rightly cites its definition, and in the
-    2026-09-25 acceptance run every one of 16 consumer-gate rejections was
-    such a name. Symbols pulled out of the statement apply only when the repo
-    defines them: an all-caps word like `JSON` that nothing defines is not a
-    settings key either.
-    """
-    explicit = (premise.symbol or "").strip()
-    if explicit:
-        return [explicit] if SYMBOL_RE.fullmatch(explicit) else []
-    found = []
-    for symbol in dict.fromkeys(SYMBOL_RE.findall(premise.statement)):
-        definitions, _ = symbol_hits(target, symbol)
-        if definitions:
-            found.append(symbol)
-    return found
-
-
-def symbol_consumer_gate(target: TargetInfo, premise: Premise) -> GateResult:
-    """A premise naming a settings key / constant / env var must cite a line that *uses* it.
-
-    Checks provenance, not truth: citing a consumer shows the premise was
-    grounded in how the value is used. Whether the premise is right is the
-    check_fix stage's question.
-    """
-    if premise.kind == "external":
-        return GateResult(passed=True, reason="external premise")
-    symbols = premise_symbols(target, premise)
-    if not symbols:
-        return GateResult(passed=True, reason="no symbol")
-    citation = premise.citation
-    for symbol in symbols:
-        definitions, uses = symbol_hits(target, symbol)
-        consumers = ", ".join(f"{p}:{n}" for p, n in uses[:MAX_CONSUMERS_IN_REASON]) or "none found"
-        if citation is None:
-            return GateResult(passed=False, action="reask",
-                              reason=f"premise names {symbol} but cites nothing; consumers: {consumers}")
-        in_range = lambda hit: hit[0] == citation.path and citation.line_start <= hit[1] <= citation.line_end  # noqa: E731
-        if any(in_range(u) for u in uses):
-            continue
-        if any(in_range(d) for d in definitions):
-            reason = f"premise cites the definition of {symbol}, not a consumer; consumers: {consumers}"
-        else:
-            reason = f"premise names {symbol}, but its citation is not a line that uses it; consumers: {consumers}"
-        return GateResult(passed=False, action="reask", reason=reason)
-    return GateResult(passed=True)
-
-
-def fix_gate(target: TargetInfo, fix: Fix) -> GateResult:
-    """Every premise passes `premise_gate` and `symbol_consumer_gate`.
-
-    A fix with no premises depends on nothing it has shown, so it fails too.
-    The reason names the premise index so the re-ask can quote it back.
-    """
-    if not fix.premises:
-        return GateResult(passed=False, action="reask",
-                          reason="the fix lists no premises; every fact it depends on is a premise")
-    for i, premise in enumerate(fix.premises):
-        for gate in (premise_gate, symbol_consumer_gate):
-            result = gate(target, premise)
-            if not result.passed:
-                return GateResult(passed=False, action="reask",
-                                  reason=f"premise {i} ({premise.statement[:120]!r}): {result.reason}")
-    return GateResult(passed=True)

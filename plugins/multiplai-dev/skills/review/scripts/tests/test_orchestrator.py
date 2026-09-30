@@ -8,10 +8,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from conftest import KEYWORD_CITATION, SCHEMA, high_finding, verified_fix
+from conftest import KEYWORD_CITATION, SCHEMA, high_finding
 from review_pipeline import budget, sdk
 from review_pipeline.__main__ import main
-from review_pipeline.models import FinderOutput, FixCheck, ReviewState, Verdict
+from review_pipeline.models import DuplicateSet, FinderOutput, MergeOutput, ReviewState, Verdict
+
+
+def reworded_finding():
+    """The HIGH finding as a second finder words it: merged into it by the merge stage."""
+    return high_finding().with_location(claim="Rate plans are filtered on a literal 'dolcebot'",
+                                        severity="MEDIUM", dimension="callers", finder="callers")
 
 
 class FakeAgents:
@@ -34,14 +40,16 @@ class FakeAgents:
             raise RuntimeError("killed")
         if budget_label == "find:diff-bugs":
             return FinderOutput(findings=[high_finding()])
+        if budget_label == "find:callers":
+            return FinderOutput(findings=[reworded_finding()])
         if stage == "find":
             return FinderOutput()
         if stage == "verify":
-            return Verdict(status="confirmed", reason="the keyword is the only filter", citations=[KEYWORD_CITATION])
-        if stage == "prescribe":
-            return schema.model_validate(verified_fix(high_finding().id).model_dump())
-        if stage == "check_fix":
-            return FixCheck(status="confirmed", reason="nothing else reads KEYWORD")
+            return Verdict(status="confirmed", reason="the keyword is the only filter", citations=[KEYWORD_CITATION],
+                           expected_behaviour="Rate plans match whatever the channel is titled.")
+        if stage == "merge":
+            return MergeOutput(duplicate_sets=[DuplicateSet(
+                finding_ids=[high_finding().id, reworded_finding().id], reason="the same literal keyword")])
         raise AssertionError(budget_label)
 
 
@@ -89,15 +97,21 @@ def test_review_end_to_end(fixture_repo, tmp_path, agents, capsys):
     progress = (target_dir / "progress.log").read_text()
     assert "STARTED" in progress and "DONE review finished: 1 HIGH" in progress
     assert ReviewState.model_validate_json((target_dir / "review-state.json").read_text()).stage == "done"
-    assert "verify done: 1 confirmed, 0 refuted, 0 unverifiable" in stdout
-    # the repo was only read
-    assert "Assumption: the Open Channel is titled DolceBot." in (target_dir / f"review-booking-engine--{base}..{head}.md").read_text()
+    assert "verify done: 2 confirmed, 0 refuted, 0 unverifiable" in stdout
+    assert "merge done: 1 groups, 1 merged, 0 agent failures" in stdout
+    assert data["findings"][0]["severity"] == "HIGH" and len(data["findings"]) == 1
+    review = (target_dir / f"review-booking-engine--{base}..{head}.md").read_text()
+    assert "**Reported by:** diff-bugs, callers" in review
+    assert f"Merged into `{high_finding().id}`: the same defect as {high_finding().id}" in review
+    assert "merge rateplan_service.py:1-1: 2 findings, 1 duplicates" in progress
+    assert data["findings"][0]["expected_behaviour"] == "Rate plans match whatever the channel is titled."
+    assert "**Expected behaviour:** Rate plans match whatever the channel is titled." in review
 
 
 def test_resume_after_a_kill_following_verify(fixture_repo, tmp_path, agents, capsys):
     repo, base, head = fixture_repo
     out = tmp_path / "out"
-    fake = agents(kill_at="prescribe")
+    fake = agents(kill_at="merge")
     with pytest.raises(RuntimeError, match="killed"):
         main(_review_args(repo, base, head, out))
     target_dir = out / f"booking-engine--{base}..{head}"
@@ -111,7 +125,7 @@ def test_resume_after_a_kill_following_verify(fixture_repo, tmp_path, agents, ca
     assert path == target_dir / "findings.json" and path.is_file()
     resumed = fake.calls[len(first_run):]
     assert not [c for c in resumed if c.startswith(("find", "verify"))]  # finished stages are not repeated
-    assert "prescribe" in resumed and "check_fix" in resumed
+    assert resumed == ["merge"]
     assert "RESUMED after verify" in (target_dir / "progress.log").read_text()
 
 
