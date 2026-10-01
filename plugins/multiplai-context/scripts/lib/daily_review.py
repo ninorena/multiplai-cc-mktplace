@@ -4,7 +4,8 @@ Learnings pile up faster than anyone reviews them. This module turns the pile
 into one short queue per target file and a review file with the top two of each
 queue. Nothing reaches a memory or project file unless the user ticked "yes".
 
-Everything here is deterministic code. No model call.
+Everything here is deterministic code. No model call. The principles part of
+the review, which does call a model, is in ``lib/principles.py``.
 
 Where an entry lives
 --------------------
@@ -47,7 +48,7 @@ from pathlib import Path
 from typing import Callable
 
 QUEUE_MAX = 10
-PER_FILE_PER_DAY = 2
+PER_FILE_PER_DAY = 1
 RESERVE_DAYS = 90
 # Two wordings of one fact, measured on 452 real learnings: true paraphrases
 # scored Jaccard 0.35-0.44 and containment 0.56-0.69 once stop words were
@@ -667,26 +668,39 @@ def render_review_block(n: int, e: Entry, dirs: Dirs, *, expected_hash: str | No
     return "\n".join(lines)
 
 
-def build_review(store: Store, dirs: Dirs, *, today: str, per_file: int = PER_FILE_PER_DAY) -> tuple[Path | None, int]:
-    """Write today's review file. Returns (path, entries). An existing file is kept."""
+def build_review(store: Store, dirs: Dirs, *, today: str, per_file: int = PER_FILE_PER_DAY,
+                 principles_section: str = "",
+                 exclude: frozenset[str] | set[str] = frozenset()) -> tuple[Path | None, int]:
+    """Write today's review file. Returns (path, fact entries). An existing file is kept.
+
+    *principles_section* goes above the facts. *exclude* holds the keys of
+    learnings behind a waiting principle: they are judged as part of it, so
+    they are not shown again as single facts.
+    """
     path = review_path(dirs, today)
     if path.exists():
         return path, len(parse_review(path.read_text(encoding="utf-8")))
     blocks: list[str] = []
     n = 0
     for target in store.queue_targets():
-        for e in rank_sorted(store.queue(target))[:per_file]:
+        waiting = [e for e in store.queue(target) if e.key not in exclude]
+        for e in rank_sorted(waiting)[:per_file]:
             n += 1
             blocks.append(render_review_block(n, e, dirs, twins=store.twins(e)))
-    if not blocks:
+    if not blocks and not principles_section:
         return None, 0
     head = (
         f"# Learnings review {today}\n\n"
-        "Tick one box per entry: yes, no, or later. Edit the text under `Add:` first if you\n"
+        "Tick one box per item: yes, no, or later. Edit the text in a box first if you\n"
         "want different wording. Then run `/multiplai-context:dream-remember --daily`.\n"
         "No tick means later. Nothing is applied without a yes.\n"
     )
-    _atomic_write(path, head + "\n" + "\n\n".join(blocks) + "\n")
+    body = ""
+    if principles_section:
+        body += "\n" + principles_section
+    if blocks:
+        body += "\n## Facts\n\nLearnings that fit no principle, one per file.\n\n" + "\n\n".join(blocks) + "\n"
+    _atomic_write(path, head + body)
     return path, n
 
 

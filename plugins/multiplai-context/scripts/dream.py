@@ -55,7 +55,7 @@ from multiplai_core.config import load_yaml, save_yaml
 from multiplai_core.log_utils import setup_logging
 from generators.config import load_catalog_config
 from generators.dispatcher import generate_catalogs
-from lib import citation_repair, daily_review, learnings_ledger, taxonomy
+from lib import citation_repair, daily_review, learnings_ledger, principles, taxonomy
 from lib.dream_processed import (
     PROCESSED_HEADING,
     Decision,
@@ -3248,10 +3248,46 @@ def _daily_dirs() -> "daily_review.Dirs":
     )
 
 
+PRINCIPLES_TIMEOUT_S = 300.0
+
+
+async def _ask_for_principles(prompt: str) -> str:
+    client = await create_client(component="dream")
+    response = await _query(client, principles.SYSTEM,
+                            [{"role": "user", "content": prompt}], PRINCIPLES_TIMEOUT_S)
+    return response.content
+
+
+def _propose_principles(store, dirs, pending: list, today: str) -> list:
+    """New candidate principles from the queued learnings. One model call.
+
+    Returns [] when there is nothing to ask about or enough already waiting.
+    Raises on a model or parse failure; the caller decides what that costs.
+    """
+    room = principles.MAX_NEW - sum(1 for c in pending if not c.existing)
+    entries = principles.model_input(store, pending)
+    if room <= 0 or len(entries) < principles.MIN_ENTRIES:
+        return []
+    book = principles.read_book(dirs.memory)
+    prompt, idmap = principles.build_prompt(entries, book, principles.rejected_sentences(store))
+    answer = asyncio.run(_ask_for_principles(prompt))
+    # The client returns text only, so size is the only cost measure here.
+    print(f"Principles call: {len(entries)} learning(s), prompt {len(principles.SYSTEM) + len(prompt)} "
+          f"chars, answer {len(answer)} chars.")
+    logger.info("principles prompt=%d chars answer=%d chars entries=%d",
+                len(principles.SYSTEM) + len(prompt), len(answer), len(entries))
+    return principles.parse_candidates(
+        answer, idmap, book_numbers={n for n, _ in book},
+        declined=principles.load_declined(store), max_new=room, today=today,
+    )
+
+
 def _daily_review(today: str | None = None) -> int:
     """Sort learnings into one queue per target file and write today's review file.
 
-    Pure code, no model call. Nothing is deleted: entries move between files.
+    One model call groups queued learnings into candidate principles. If that
+    call fails, the review is written with its facts part only. Nothing is
+    deleted: entries move between files.
     """
     if not acquire_run_lock():
         return 1
@@ -3261,7 +3297,20 @@ def _daily_review(today: str | None = None) -> int:
     store = daily_review.Store(dirs.learnings)
     ing = daily_review.ingest(store)
     bal = daily_review.rebalance(store, today=today)
-    path, n = daily_review.build_review(store, dirs, today=today)
+    section, exclude = "", frozenset()
+    if not daily_review.review_path(dirs, today).exists():
+        pending = principles.prune_pending(store, principles.load_pending(store))
+        try:
+            pending += _propose_principles(store, dirs, pending, today)
+        except Exception as exc:
+            logger.exception("principles step failed; the review has facts only")
+            print(f"Principles step skipped ({exc.__class__.__name__}: {str(exc)[:120]}). "
+                  "The review has facts only.")
+        principles.save_pending(store, pending)
+        section = principles.render_section(pending, store, dirs.memory)
+        exclude = frozenset(k for c in pending for k in c.keys)
+    path, n = daily_review.build_review(store, dirs, today=today,
+                                        principles_section=section, exclude=exclude)
     print(f"Ingested {ing.entries} entr(ies) from {len(ing.files_archived)} file(s).")
     for name, why in ing.files_held:
         print(f"  held     {name}: {why}")
@@ -3269,7 +3318,7 @@ def _daily_review(today: str | None = None) -> int:
     if path is None:
         print("Nothing to review today.")
     else:
-        print(f"Review file: {path} ({n} entr(ies))")
+        print(f"Review file: {path} ({section.count('<!-- principle ')} principle item(s), {n} fact(s))")
     return 0
 
 
@@ -3284,8 +3333,19 @@ def _daily_apply(review_arg: str | None = None, today: str | None = None) -> int
         print(f"No review file at {path}")
         return 1
     store = daily_review.Store(dirs.learnings)
+    # Principles first: a yes moves learnings out of their queues, and the
+    # facts below were already chosen to exclude them.
+    prep = principles.apply_principles(path, store, dirs, today=today)
+    print(f"Principles: added {len(prep.accepted)}, rejected {len(prep.rejected)}, left {len(prep.left)}.")
+    for label in prep.accepted:
+        print(f"  added    {label}")
+    for label in prep.rejected:
+        print(f"  rejected {label}")
+    for label, why in prep.left:
+        print(f"  left     {label}: {why}")
     rep = daily_review.apply_review(path, store, dirs, today=today, refresh=_refresh_last_updated)
-    print(f"Applied {len(rep.applied)}, rejected {len(rep.rejected)}, left {len(rep.left)}.")
+    rep.written_files += prep.written_files
+    print(f"Facts: applied {len(rep.applied)}, rejected {len(rep.rejected)}, left {len(rep.left)}.")
     for label in rep.applied:
         print(f"  applied  {label}")
     for label in rep.rejected:
@@ -3435,8 +3495,9 @@ def main() -> None:
         "--daily-review",
         action="store_true",
         help="Sort learnings into one queue per target file (at most 10 each, the "
-             "rest to archived/reserve.md) and write dreams/review-YYYY-MM-DD.md "
-             "with the top 2 of each queue. Pure code, no model call, deletes nothing.",
+             "rest to archived/reserve.md), ask the model for up to 3 candidate "
+             "principles, and write dreams/review-YYYY-MM-DD.md with those and the "
+             "top fact of each queue. Deletes nothing.",
     )
     parser.add_argument(
         "--daily",

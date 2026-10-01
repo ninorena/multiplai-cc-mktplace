@@ -33,6 +33,11 @@ logger = logging.getLogger(__name__)
 # file — so the rot would be invisible forever. Regeneration is already
 # content-hash-gated (``generators/base.py``), so anchors are only
 # re-derived when the file actually changed.
+# Memory files the router never offers. CLAUDE.md is the memory system's own
+# index; the two principles files are loaded by another route (see
+# lib/principles.py, NOT_ROUTED). context_manager.py keeps the same list.
+_NOT_ROUTED = frozenset({"claude.md", "principles.md", "principles-examples.md"})
+
 _HAND_AUTHORED_FIELDS = (
     "sections",
     "bundle",
@@ -118,7 +123,9 @@ class MemoryGenerator(GeneratorBase):
     def discover_sources(self) -> dict[str, Any]:
         """Find all .md files in the configured memory directory.
 
-        ``CLAUDE.md`` is excluded: it is the memory system's own index —
+        ``CLAUDE.md`` and the two principles files are excluded (``_NOT_ROUTED``).
+        The principles book loads every session by another route, and its
+        examples are read only on request. ``CLAUDE.md`` is the memory system's own index —
         meta-documentation about how routing works, not personal context —
         and cataloging it makes the router recommend it under a name three
         other always-loaded files share. Memory-management skills read it
@@ -133,7 +140,7 @@ class MemoryGenerator(GeneratorBase):
 
         sources = {}
         for path in sorted(memory_dir.glob("*.md")):
-            if path.is_file() and path.name.lower() != "claude.md":
+            if path.is_file() and path.name.lower() not in _NOT_ROUTED:
                 sources[path.name] = path
         return sources
 

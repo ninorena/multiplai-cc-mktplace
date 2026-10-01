@@ -16,6 +16,31 @@ are the release dates recorded at the time, not derived from a tag.
 
 ## [Unreleased]
 
+## [0.57.0] - 2026-10-01
+
+### Added
+
+- **The daily review proposes principles.** `dream.py --daily-review` now makes one
+  model call that groups queued learnings into up to 3 candidate principles: one
+  sentence each, with at least 3 learnings behind it. The review file shows them
+  first, under `## Principles`, each with its 1 or 2 clearest learnings. A `yes`
+  adds the sentence to `memory/principles.md` as `P<n>`, writes the examples to
+  `memory/principles-examples.md` under that number, and moves every learning
+  behind it to `learnings/archived/rolled-up.md`. A `no` records the sentence in
+  `archived/rejected-principles.md`, which the model is shown next time, and
+  leaves the learnings in their queues. The model can also offer learnings as
+  more examples of a principle already in the book. Nothing is deleted.
+- `memory/principles.md` is capped at 40 principles. A yes on a full book is
+  refused. It is meant to load every session by a route outside this plugin, so
+  the router never offers it. The router also skips `principles-examples.md`.
+
+### Changed
+
+- **The facts part of the daily review shows 1 entry per file, down from 2.**
+  Learnings behind a waiting principle are not shown as facts.
+- If the principles call fails or returns something unreadable, the review is
+  written with its facts part only and the output says `Principles step skipped`.
+
 ## [0.56.0] - 2026-09-30
 
 ### Changed
