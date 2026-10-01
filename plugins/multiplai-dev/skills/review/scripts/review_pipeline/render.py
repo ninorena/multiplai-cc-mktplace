@@ -58,7 +58,10 @@ def finding_section(fd: dict, *, web_base: str | None, head_sha: str,
     out.append("**Evidence:**")
     out.append("")
     for c in fd["citations"]:
-        out.append(f"- {code_link(web_base, head_sha, c['path'], c['line_start'], c['line_end'])}")
+        if c["path"].lower().startswith(("http://", "https://")):
+            out.append(f"- web source: <{c['path']}>")
+        else:
+            out.append(f"- {code_link(web_base, head_sha, c['path'], c['line_start'], c['line_end'])}")
         out.append("")
         out.append(_fence(c["quote"]))
         out.append("")

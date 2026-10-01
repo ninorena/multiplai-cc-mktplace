@@ -36,16 +36,23 @@ that fails is recorded as `unverifiable`. The gates never ask a model.
 ## What this skill does on the machine
 
 - **Sends the repository's contents to a model.** Each agent reads a snapshot
-  of the tree at the reviewed commit, with `Read`, `Grep` and `Glob` only. No
-  agent gets a shell, file edits, or web access. This is why it needs
-  `--trust-repo`: the repo's own text becomes part of what the model acts on.
+  of the tree at the reviewed commit with `Read`, `Grep` and `Glob`. Finders
+  and verifiers also have `WebFetch` and `WebSearch`, to look up how a
+  dependency behaves at the version the repository pins. No agent gets a shell
+  or file edits. This is why it needs `--trust-repo`: the repo's own text
+  becomes part of what the model acts on. The PR description and fetched pages
+  are shown to the agents as untrusted data; a web page can be cited only after
+  a line of the repository, and never confirms a finding by itself.
 - **Reads git history** of the reviewed repository (`git rev-parse`,
   `git diff`, `git log`, `git show`, `git archive`). It never
   checks out, merges, commits or writes to it, and fetches only with
   `--fetch`.
-- **Uses the network** only through the model calls, and through the GitHub
-  CLI: `gh pr view` for `--pr`, and `gh pr comment` for `post`, which is the
-  only command that writes anywhere outside the output directory.
+- **Uses the network** through the model calls, the agents' `WebFetch` and
+  `WebSearch`, and the GitHub CLI: for `--pr`, `gh pr view` (shas, title,
+  body) and `gh api repos/{owner}/{repo}/rules/branches/<base>` (the rules on
+  the base branch, so the agents know whether CI blocks a merge); and
+  `gh pr comment` for `post`, which is the only command that writes anywhere
+  outside the output directory.
 - **Writes files** under the output directory and to the log files.
 
 ## Prerequisites

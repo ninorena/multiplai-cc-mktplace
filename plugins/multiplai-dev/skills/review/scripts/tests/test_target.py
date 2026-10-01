@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 
 import pytest
+from conftest import REAL_BRANCH_RULES
 
 from review_pipeline import target
 from review_pipeline.target import TargetError
@@ -64,13 +65,77 @@ def test_pr_uses_gh_view_and_merge_base(fixture_repo, monkeypatch):
 
     def fake_view(repo_path, number):
         calls.append(number)
-        return {"headRefOid": head, "baseRefOid": base, "headRefName": "feature/db-2038"}
+        return {"headRefOid": head, "baseRefOid": base, "headRefName": "feature/db-2038",
+                "baseRefName": "main", "title": "DB-2038: direct booking",
+                "body": "Only the keyword filter.\n\nCI gates the merge."}
+
+    rules = [{"type": "pull_request", "parameters": {"required_approving_review_count": 1}}]
+    asked = []
+
+    def fake_rules(repo_path, branch):
+        asked.append(branch)
+        return rules
 
     monkeypatch.setattr(target, "_pr_view", fake_view)
+    monkeypatch.setattr(target, "branch_rules", fake_rules)
     r = target.resolve(repo, pr=812)
     assert (r.base_sha, r.head_sha, r.pr, calls) == (base, head, 812, [812])
+    assert (r.title, r.base_ref) == ("DB-2038: direct booking", "main")
     info = target.build_target(r)
     assert info.slug == "booking-engine--pr-812" and info.pr == 812
+    assert (info.title, info.description, info.base_ref) == (
+        "DB-2038: direct booking", "Only the keyword filter.\n\nCI gates the merge.", "main")
+    assert info.branch_rules == rules and asked == ["main"]
+
+
+def test_pr_view_asks_for_title_body_and_base():
+    for field in ("headRefOid", "baseRefOid", "headRefName", "baseRefName", "title", "body"):
+        assert field in target.PR_VIEW_FIELDS.split(",")
+
+
+def test_branch_rules_degrade_to_empty(fixture_repo, monkeypatch):
+    repo, base, head = fixture_repo
+    monkeypatch.setattr(target.shutil, "which", lambda name: None)
+    assert REAL_BRANCH_RULES(repo, "main") is None  # no gh
+    assert REAL_BRANCH_RULES(repo, "") is None
+    monkeypatch.setattr(target.shutil, "which", lambda name: "/usr/bin/gh")
+    monkeypatch.setattr(target, "remote_url", lambda repo: "https://gitlab.com/o/r.git")
+    assert REAL_BRANCH_RULES(repo, "main") is None  # not GitHub
+
+
+def test_branch_rules_parse_gh_api_output(fixture_repo, monkeypatch):
+    import subprocess as sp
+    repo, base, head = fixture_repo
+    seen = []
+
+    def fake_run(argv, **kwargs):
+        seen.append(argv)
+        return sp.CompletedProcess(argv, 0, stdout='[{"type": "deletion"}, 7]', stderr="")
+
+    monkeypatch.setattr(target.shutil, "which", lambda name: "/usr/bin/gh")
+    monkeypatch.setattr(target, "remote_url", lambda repo: "https://github.com/o/r.git")
+    monkeypatch.setattr(target.subprocess, "run", fake_run)
+    assert REAL_BRANCH_RULES(repo, "main") == [{"type": "deletion"}]
+    assert seen[0][1:] == ["api", "repos/{owner}/{repo}/rules/branches/main"]
+
+
+def test_branch_rules_api_failure_is_empty_not_fatal(fixture_repo, monkeypatch):
+    import subprocess as sp
+    repo, base, head = fixture_repo
+    monkeypatch.setattr(target.shutil, "which", lambda name: "/usr/bin/gh")
+    monkeypatch.setattr(target, "remote_url", lambda repo: "https://github.com/o/r.git")
+    monkeypatch.setattr(target.subprocess, "run",
+                        lambda argv, **kw: sp.CompletedProcess(argv, 1, stdout="", stderr="HTTP 404"))
+    assert REAL_BRANCH_RULES(repo, "main") is None
+
+
+def test_branch_rules_empty_list_means_no_rules(fixture_repo, monkeypatch):
+    import subprocess as sp
+    repo, base, head = fixture_repo
+    monkeypatch.setattr(target.shutil, "which", lambda name: "/usr/bin/gh")
+    monkeypatch.setattr(target, "remote_url", lambda repo: "https://github.com/o/r.git")
+    monkeypatch.setattr(target.subprocess, "run", lambda argv, **kw: sp.CompletedProcess(argv, 0, stdout="[]", stderr=""))
+    assert REAL_BRANCH_RULES(repo, "main") == []
 
 
 def test_writes_diff_commits_and_files_and_leaves_the_repo_alone(fixture_repo, tmp_path):
@@ -85,6 +150,7 @@ def test_writes_diff_commits_and_files_and_leaves_the_repo_alone(fixture_repo, t
     assert "+KEYWORD = 'dolcebot'" in (tmp_path / info.slug / "diff.patch").read_text()
     assert (tmp_path / info.slug / "files.txt").read_text().count("\n") == 3
     assert info.remote_url == "https://github.com/example/booking-engine.git"
+    assert (info.title, info.description, info.base_ref, info.branch_rules) == ("", "", "", None)
     after = (_git(repo, "rev-parse", "HEAD"), _git(repo, "symbolic-ref", "HEAD"), _git(repo, "status", "--short"))
     assert before == after
 

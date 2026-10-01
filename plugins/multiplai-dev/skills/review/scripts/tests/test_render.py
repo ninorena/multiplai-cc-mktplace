@@ -199,3 +199,13 @@ def test_post_refuses_a_non_pr_target(canned_state, tmp_path, fake_gh, capsys):
     assert main(["post", str(target_dir)]) == 2
     assert "needs a PR target" in capsys.readouterr().err
     assert fake_gh == []
+
+
+def test_web_citation_renders_as_a_link_not_a_code_line():
+    from review_pipeline import render
+    fd = {"id": "x", "severity": "LOW", "status": "confirmed", "file": "a.py", "line_start": 1, "line_end": 1,
+          "claim": "c", "failure_scenario": "f", "verdict_reason": "", "expected_behaviour": "",
+          "citations": [{"path": "a.py", "line_start": 1, "line_end": 1, "quote": "q"},
+                        {"path": "https://example.com/doc", "line_start": 1, "line_end": 1, "quote": "a duration"}]}
+    text = render.finding_section(fd, web_base=None, head_sha="0" * 40)
+    assert "web source: <https://example.com/doc>" in text and "a duration" in text

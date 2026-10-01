@@ -52,10 +52,15 @@ class _Model(BaseModel):
 
 
 class Citation(_Model):
-    path: str
+    path: str  # a repo-relative path, or an http(s) URL for a web source
     line_start: int = Field(ge=1)
     line_end: int = Field(ge=1)
     quote: str  # exact text expected at those lines
+
+    @property
+    def is_web(self) -> bool:
+        """A web source. The gates do not check it, and it never anchors a finding."""
+        return self.path.lower().startswith(("http://", "https://"))
 
     @model_validator(mode="after")
     def _ordered(self) -> "Citation":
@@ -125,6 +130,16 @@ class TargetInfo(BaseModel):
     pr: int | None = None
     tickets: list[str] = Field(default_factory=list)
     deployed_in: str | None = None
+    # What the author says the change does: the PR title and body for --pr,
+    # otherwise empty. Shown to the agents as untrusted text.
+    title: str = ""
+    description: str = ""
+    # The branch the change merges into, and GitHub's rules on it
+    # (`gh api repos/{owner}/{repo}/rules/branches/<base_ref>`), so the agents
+    # can tell whether CI actually blocks a merge. `[]` means GitHub reports no
+    # rules; `None` means they could not be read (no gh, not GitHub, API error).
+    base_ref: str = ""
+    branch_rules: list[dict] | None = None
 
 
 class Rejected(BaseModel):

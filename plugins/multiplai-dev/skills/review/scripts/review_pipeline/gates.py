@@ -65,14 +65,23 @@ def citation_gate(target: TargetInfo, citation: Citation) -> GateResult:
 
 
 def finding_gate(target: TargetInfo, finding: Finding) -> GateResult:
-    """Every citation reproduces, the file is in the diff (unless pre-existing), severity is known."""
+    """Every repo citation reproduces, the file is in the diff (unless pre-existing), severity is known.
+
+    A web citation (an http(s) URL as `path`) is not checked: the gates only
+    read git. It may follow a repo citation, never stand first or alone, so a
+    finding is always anchored to the reviewed commit.
+    """
     if finding.severity not in SEVERITIES:
         return GateResult(passed=False, reason=f"unknown severity {finding.severity!r}", action="reject")
     if finding.dimension != "pre-existing" and finding.file not in target.files:
         return GateResult(passed=False, reason=f"{finding.file} is not a changed file", action="reject")
     if not finding.citations:
         return GateResult(passed=False, reason="no citations", action="reject")
+    if finding.citations[0].is_web:
+        return GateResult(passed=False, reason="first citation is a web source, not a file at head", action="reject")
     for i, citation in enumerate(finding.citations):
+        if citation.is_web:
+            continue
         result = citation_gate(target, citation)
         if not result.passed:
             return GateResult(
@@ -94,6 +103,9 @@ def verdict_gate(target: TargetInfo, verdict: Verdict) -> GateResult:
                           reason="verifier confirmed without citing what it read")
     reasons = []
     for citation in verdict.citations:
+        if citation.is_web:
+            reasons.append(f"{citation.path}: a web source does not confirm a finding")
+            continue
         result = citation_gate(target, citation)
         if result.passed:
             return GateResult(passed=True)

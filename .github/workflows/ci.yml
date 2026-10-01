@@ -235,6 +235,23 @@ jobs:
           uv run --project ../../../../.. --package research-pipeline \
             --extra dev python -m pytest tests/ -q
 
+  review-pipeline-tests:
+    name: review pipeline tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      # The tests build a fixture git repository with fixed dates; git is on
+      # the runner image. No test calls a model or `gh`.
+      - name: Run tests
+        working-directory: plugins/multiplai-dev/skills/review/scripts
+        run: |
+          uv run --project ../../../../.. --package review-pipeline \
+            --extra dev python -m pytest tests/ -q
+
   review-viewer-tests:
     name: review-viewer tests
     runs-on: ubuntu-latest

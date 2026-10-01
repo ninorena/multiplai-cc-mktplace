@@ -17,6 +17,36 @@ time, not derived from a tag.
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-10-01
+
+### Added
+- review: for `--pr` targets the pipeline now reads the PR title and body and
+  GitHub's rules on the base branch (`gh api repos/{owner}/{repo}/rules/branches/<base>`),
+  and gives both to every finder and verifier. The description is shown as a
+  fenced, untrusted list of claims to check; the rules block says plainly when
+  no `required_status_checks` rule exists, so "CI gates the merge" is reported
+  as false rather than taken on trust. Reading the rules can fail without
+  failing the review.
+- review: finders and verifiers have `WebFetch` and `WebSearch`, to look up how
+  a dependency behaves at the version the repository pins (provider source,
+  library docs, a CI platform's semantics). The merger still only reads. A web
+  source can be cited after a repository citation; it is never checked by the
+  gates, never the first citation, and never confirms a finding on its own.
+- review: the `conventions` finder now looks outside the diff when the change
+  retires a fact (it greps for other statements of the old one), when a rule
+  says where something must be recorded, and when the change claims something
+  about the project's settings or process. `pre-existing` now covers unchanged
+  files the change executes, builds or makes stale, documentation included.
+
+- ci: the review pipeline's tests now run on every push and PR, as a
+  `review pipeline tests` job next to review-viewer's. They were run by hand
+  only.
+
+### Changed
+- review: a verifier whose question is only partly settled by the repository
+  answers `unverifiable` and names what is missing, instead of `confirmed`
+  with a caveat in the text.
+
 ## [0.22.1] - 2026-09-30
 
 ### Fixed
