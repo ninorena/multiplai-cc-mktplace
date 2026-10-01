@@ -7,6 +7,30 @@ effort: medium
 
 # Multiplai: Process Learnings
 
+## `--daily`: apply today's review file
+
+If the user ran `/multiplai-context:dream-remember --daily`, do only this and stop.
+Do not run Steps 0 to 8.
+
+```
+uv run --project "${CLAUDE_PLUGIN_ROOT}/scripts" "${CLAUDE_PLUGIN_ROOT}/scripts/dream.py" --daily
+```
+
+It reads `.multiplai/dreams/review-YYYY-MM-DD.md` (add `--review <file>` for another
+day's file), applies only the entries with `yes` ticked, and moves `no` entries to
+`.multiplai/learnings/archived/rejected.md`. `later` and no tick leave the entry in its
+queue. Pure code, no model call. Relay its output as printed, including every `left` line
+and its reason. Nothing is deleted: an applied entry moves to `archived/applied.md`.
+
+If it reports a target file changed, the review file now shows the new edit under a
+`CHANGED:` line with the boxes cleared. Tell the user to check it and tick again.
+
+Do not edit the review file yourself, and do not tick a box for the user.
+
+The rest of this skill is the older whole-proposal review.
+
+---
+
 Human-in-the-loop workflow for applying accumulated session learnings to memory files.
 
 Dream (nightly or on demand via `/multiplai-context:dream`) generates a proposal file in
@@ -602,16 +626,16 @@ JSON
 
 ---
 
-## Step 5: Collect Consolidated Learnings
+## Step 5: Archive Consolidated Learnings
 
-Always run the collector, then report what it removed:
+Always run the collector, then report what it archived:
 
 ```bash
 uv run --project "${CLAUDE_PLUGIN_ROOT}/scripts" "${CLAUDE_PLUGIN_ROOT}/scripts/dream.py" --gc-learnings
 ```
 
-It is pure code — no model call, no lock — and it makes the keep/delete call **per file,
-in code**, so you never have to. A learnings file is removed only when **both** hold:
+It is pure code — no model call, no lock — and it makes the keep/archive call **per file,
+in code**, so you never have to. A learnings file is moved to `.multiplai/learnings/archived/` only when **both** hold:
 
 - every `## Session Learnings` record in it has already been consolidated (dream's ledger
   has its hash), **and**
@@ -623,13 +647,15 @@ on to the user; don't second-guess it.
 
 This is why the old "delete the sources, but only if the whole proposal is now decided"
 judgement is gone. Getting it wrong deleted the evidence behind a review that was still
-running, and there was no way back. Now: items you deliberately left pending keep their
+running, and there was no way back. Nothing is deleted any more: the collector only moves
+a file into `archived/` (a name already taken there gets a `-2`/`-3` suffix). Now: items you deliberately left pending keep their
 source files automatically, so their `**Source:** file:line` citations still resolve for
 whoever finishes the review (here or in the GUI); and a file appended to since the last
 dream run — today's, usually — is kept for the same reason, because its newest records
-are not consolidated yet. Git history preserves whatever does get collected.
+are not consolidated yet. `.multiplai/learnings/` is not a git repo, so `archived/` is the
+only copy of whatever the collector moves: to get a file back, move it out of `archived/`.
 
-**You do not delete learnings files yourself, and you never bulk-clear the dreams
+**You do not delete or move learnings files yourself, and you never bulk-clear the dreams
 directory.** Never glob-delete `.multiplai/dreams/processed-learnings-*.md`: a batch or
 recovery run can leave another session's proposal mid-review there, those files are not
 yours to touch, and `dream.py` already writes non-colliding `-2`/`-3` suffixes so nothing

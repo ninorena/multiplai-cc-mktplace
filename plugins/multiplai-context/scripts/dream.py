@@ -5,16 +5,17 @@ to .multiplai/dreams/ for review. Run /multiplai-context:dream-remember to apply
 
 --auto: fully autonomous — applies changes directly to memory files without review.
 --check: report pending learnings count, chunk plan and predicted duration, and exit.
---gc-learnings: delete learnings files that are fully consolidated and fully
-    decided. Pure code, no model call.
+--gc-learnings: move learnings files that are fully consolidated and fully
+    decided into learnings/archived/. Pure code, no model call.
 
 The report path is a batching pipeline, not one big call: learnings are parsed
 into `## Session Learnings` blocks, filtered against a ledger of what has already
 been consolidated, packed into timeout-sized chunks, drafted concurrently, and
-merged deterministically into ONE document. Learnings files are never moved or
-deleted here — the ledger, not the filesystem, is what says "already done".
-Deletion lives in exactly two places: `--auto` after a successful apply, and the
-explicit `--gc-learnings` subcommand.
+merged deterministically into ONE document. The report path never moves or
+deletes learnings files — the ledger, not the filesystem, is what says "already
+done". Nothing deletes a learnings file anywhere. Two places move one into
+learnings/archived/: `--auto` after a successful apply, and the explicit
+`--gc-learnings` subcommand.
 """
 
 import asyncio
@@ -54,7 +55,7 @@ from multiplai_core.config import load_yaml, save_yaml
 from multiplai_core.log_utils import setup_logging
 from generators.config import load_catalog_config
 from generators.dispatcher import generate_catalogs
-from lib import citation_repair, learnings_ledger, taxonomy
+from lib import citation_repair, daily_review, learnings_ledger, taxonomy
 from lib.dream_processed import (
     PROCESSED_HEADING,
     Decision,
@@ -2324,8 +2325,14 @@ async def dream_auto() -> None:
             # blocks fed which target, which it does not.
             if failed_count == 0:
                 for f in source_files:
-                    f.unlink(missing_ok=True)
-                    logger.info("Deleted processed learnings: %s", f.name)
+                    try:
+                        dest = _archive_learning(f)
+                    except FileNotFoundError:
+                        continue
+                    except OSError:
+                        logger.exception("Could not archive %s — left in place", f.name)
+                        continue
+                    logger.info("Archived processed learnings: %s -> %s", f.name, dest)
                 # Fully applied → the audit artifact is no longer pending;
                 # archive it so the dreams root holds only pending proposals
                 # (dream-remember Step 1 must never re-present it). On any
@@ -3050,8 +3057,35 @@ def _reconcile(*, dry_run: bool = False) -> int:
     return 1 if (failures or unreadable) else 0
 
 
+def _archive_learning(f: Path) -> Path:
+    """Move a spent learnings file into ``archived/`` beside it. Never deletes.
+
+    ``.multiplai/learnings/`` is not a git repo, so an unlink here is
+    unrecoverable. Raises ``OSError`` when the move fails; the caller keeps the
+    file where it is. A name already in ``archived/`` is never overwritten: the
+    new file gets a ``-2``, ``-3`` suffix.
+    """
+    dest_dir = f.parent / "archived"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    # os.rename replaces an existing destination without a word, and another
+    # process can take the name between a check and the rename. os.link fails
+    # if the name exists, so claiming it is atomic.
+    n = 1
+    while True:
+        dest = dest_dir / (f.name if n == 1 else f"{f.stem}-{n}{f.suffix}")
+        try:
+            os.link(f, dest)
+            break
+        except FileExistsError:
+            n += 1
+    os.unlink(f)
+    return dest
+
+
 def _gc_learnings() -> None:
-    """Delete learnings files that are fully consolidated **and** fully decided.
+    """Archive learnings files that are fully consolidated **and** fully decided.
+
+    "Archive" means a move into ``learnings/archived/``; nothing is deleted.
 
     This replaces a judgement call the reviewing skill used to make in prose
     ("delete the sources, but only if the proposal is now fully decided, else
@@ -3059,7 +3093,7 @@ def _gc_learnings() -> None:
     when it was, so the decision moves into code, per file, with a stated reason
     for everything kept.
 
-    A file is deleted only when **all** of these hold:
+    A file is archived only when **all** of these hold:
 
     (a) every ``## Session Learnings`` record in it hashes to a key the ledger
         has recorded — i.e. dream has already consolidated all of it. A file
@@ -3145,7 +3179,7 @@ def _gc_learnings() -> None:
             print(f"GC learnings: {p.name} unreadable — nothing deleted this pass")
             return
 
-    deleted: list[str] = []
+    archived: list[str] = []
     kept: list[tuple[str, str]] = []
 
     for f in files:
@@ -3180,27 +3214,92 @@ def _gc_learnings() -> None:
             kept.append((f.name, "still cited by a pending proposal"))
             continue
         try:
-            f.unlink()
+            _archive_learning(f)
         except OSError as exc:
-            kept.append((f.name, f"could not delete ({exc.__class__.__name__})"))
+            kept.append((f.name, f"could not archive ({exc.__class__.__name__})"))
             continue
-        deleted.append(f.name)
+        archived.append(f.name)
 
-    if deleted:
+    if archived:
         remaining = {p.name for p in learnings_dir.glob("*.md")}
         learnings_ledger.prune(ledger_path, remaining)
 
-    print(f"GC learnings: deleted {len(deleted)}, kept {len(kept)}")
-    for name in deleted:
-        print(f"  deleted  {name}")
+    print(f"GC learnings: archived {len(archived)}, kept {len(kept)}")
+    for name in archived:
+        print(f"  archived {name}")
     for name, reason in kept:
         print(f"  kept     {name} — {reason}")
-    logger.info("gc-learnings: deleted=%d kept=%d", len(deleted), len(kept))
+    logger.info("gc-learnings: archived=%d kept=%d", len(archived), len(kept))
 
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
+
+def _daily_dirs() -> "daily_review.Dirs":
+    paths = get_paths()
+    learnings = Path(paths.learnings_dir)
+    return daily_review.Dirs(
+        workspace=learnings.parent.parent,
+        memory=Path(paths.memory_dir()),
+        learnings=learnings,
+        dreams=Path(paths.dreams_dir()),
+    )
+
+
+def _daily_review(today: str | None = None) -> int:
+    """Sort learnings into one queue per target file and write today's review file.
+
+    Pure code, no model call. Nothing is deleted: entries move between files.
+    """
+    if not acquire_run_lock():
+        return 1
+    today = today or datetime.now().strftime("%Y-%m-%d")
+    dirs = _daily_dirs()
+    dirs.learnings.mkdir(parents=True, exist_ok=True)
+    store = daily_review.Store(dirs.learnings)
+    ing = daily_review.ingest(store)
+    bal = daily_review.rebalance(store, today=today)
+    path, n = daily_review.build_review(store, dirs, today=today)
+    print(f"Ingested {ing.entries} entr(ies) from {len(ing.files_archived)} file(s).")
+    for name, why in ing.files_held:
+        print(f"  held     {name}: {why}")
+    print(f"Reserve: {bal.to_reserve} moved in, {bal.refilled} refilled, {bal.expired} expired to rejected.")
+    if path is None:
+        print("Nothing to review today.")
+    else:
+        print(f"Review file: {path} ({n} entr(ies))")
+    return 0
+
+
+def _daily_apply(review_arg: str | None = None, today: str | None = None) -> int:
+    """Apply the ticked entries of a review file. Only `yes` writes anything."""
+    if not acquire_run_lock():
+        return 1
+    today = today or datetime.now().strftime("%Y-%m-%d")
+    dirs = _daily_dirs()
+    path = Path(review_arg) if review_arg else daily_review.review_path(dirs, today)
+    if not path.is_file():
+        print(f"No review file at {path}")
+        return 1
+    store = daily_review.Store(dirs.learnings)
+    rep = daily_review.apply_review(path, store, dirs, today=today, refresh=_refresh_last_updated)
+    print(f"Applied {len(rep.applied)}, rejected {len(rep.rejected)}, left {len(rep.left)}.")
+    for label in rep.applied:
+        print(f"  applied  {label}")
+    for label in rep.rejected:
+        print(f"  rejected {label}")
+    for label, why in rep.left:
+        print(f"  left     {label}: {why}")
+    in_memory = [p for p in rep.written_files if dirs.memory.resolve() in p.resolve().parents]
+    if in_memory:
+        _commit_memory_changes(
+            dirs.memory,
+            pathspec=[str(p.resolve().relative_to(dirs.memory.resolve())) for p in in_memory],
+            message="memory: daily learnings review",
+        )
+    return 0
 
 
 def _load_decisions(source: str) -> list[Decision]:
@@ -3332,6 +3431,20 @@ def main() -> None:
              "pending). Pure code, no model call, no lock. Prints what it removed "
              "and why it kept the rest.",
     )
+    parser.add_argument(
+        "--daily-review",
+        action="store_true",
+        help="Sort learnings into one queue per target file (at most 10 each, the "
+             "rest to archived/reserve.md) and write dreams/review-YYYY-MM-DD.md "
+             "with the top 2 of each queue. Pure code, no model call, deletes nothing.",
+    )
+    parser.add_argument(
+        "--daily",
+        action="store_true",
+        help="Apply the ticked entries of today's review file (or --review FILE). "
+             "Only a ticked `yes` writes to a memory or project file.",
+    )
+    parser.add_argument("--review", metavar="FILE", help="With --daily: the review file to apply.")
     args = parser.parse_args()
 
     # `--dry-run` is read only by the paths that name it below. Without this,
@@ -3431,6 +3544,12 @@ def main() -> None:
             )
             print(f"Archived proposal to {archived}")
         return
+
+    if args.daily_review:
+        sys.exit(_daily_review())
+
+    if args.daily:
+        sys.exit(_daily_apply(args.review))
 
     if args.reconcile:
         sys.exit(_reconcile(dry_run=args.dry_run))

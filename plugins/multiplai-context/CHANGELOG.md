@@ -16,6 +16,43 @@ are the release dates recorded at the time, not derived from a tag.
 
 ## [Unreleased]
 
+## [0.56.0] - 2026-09-30
+
+### Changed
+
+- **`/dream-remember` no longer deletes learnings files. It moves them to
+  `.multiplai/learnings/archived/`.** Step 5 (`dream.py --gc-learnings`) and the
+  `--auto` apply used to delete each spent file, and the skill said "Git history
+  preserves originals". That was false: `.multiplai/learnings/` is not a git
+  repo, so a deleted learning was gone. Now the same files are chosen by the same
+  rules, but they are moved. A name already in `archived/` is never overwritten
+  (the new file gets `-2`, `-3`). If a move fails, the file stays where it was.
+  The collector prints `archived N` where it used to print `deleted N`. To get a
+  file back, move it out of `archived/`.
+
+### Added
+
+- **A daily review: two learnings per target file, per day, by tick.**
+  `dream.py --daily-review` (no model call, deletes nothing) sorts every learning
+  into a queue for its target file. Entries that say the same thing merge into
+  one and keep each wording. Each queue keeps its best 10, ranked corrections
+  first, then entries seen in 2 or more sessions, then `verified`, then newest.
+  The rest go to `learnings/archived/reserve.md`, refill a queue that falls below
+  10, and move to `rejected.md` after 90 days. It writes
+  `dreams/review-YYYY-MM-DD.md`: the top 2 of each queue, the exact text to add,
+  and three boxes (yes, no, later). You can edit the text before you tick.
+  `/multiplai-context:dream-remember --daily` applies only the `yes` entries,
+  stops and shows the edit again if the target file changed since the review was
+  written, refuses an edit that would push a file past its `> Cap:`, and writes
+  nothing for `later` or no tick. `no` moves to `archived/rejected.md`, and `yes`
+  to `archived/applied.md`. The older whole-proposal `/dream` is unchanged.
+  When the same fact sits in two queues for different target files, each
+  entry gets a line in the review naming the other file ("Same fact, other file:
+  queued for X. Say yes to one only."), also when the twin is already applied.
+  It never merges across files, because a project fact and a general rule can
+  look alike and belong in different places. The match is word overlap, so a
+  differently worded twin can still be missed.
+
 ## [0.55.2] - 2026-09-28
 
 ### Changed

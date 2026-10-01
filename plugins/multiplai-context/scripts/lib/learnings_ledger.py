@@ -17,16 +17,15 @@ a killed run on 2026-07-31 left four files (204 KB) stranded in a
 noticed. Each hand-batched slice also produced its own proposal, so the reviewer
 was left reconciling several overlapping documents.
 
-The ledger replaces all of that. Learnings files are **never moved or deleted**
-here; instead each ``## Session Learnings`` record is hashed, and dream
+The ledger replaces all of that. This module **never moves or deletes** a learnings file; instead each ``## Session Learnings`` record is hashed, and dream
 consolidates only the records whose hash it has not seen. "Process what's new"
 becomes a set difference, a killed run resumes instead of redoing, and repeated
 runs are idempotent.
 
-Deletion of learnings files happens in exactly two places: ``dream --auto`` after a
-successful apply, and ``dream --gc-learnings``, which removes a file only once
-every record in it is recorded here **and** no proposal citing it is still
-pending. :func:`prune` then drops the orphaned keys.
+Nothing deletes a learnings file. ``dream --auto`` after a successful apply, and
+``dream --gc-learnings``, move a file into ``learnings/archived/``; the latter
+only once every record in it is recorded here **and** no proposal citing it is
+still pending. :func:`prune` then drops the orphaned keys.
 
 Concurrency: callers hold dream's exclusive run lock, so the read-modify-write in
 :func:`record` needs no locking of its own. The write is still atomic (temp file
