@@ -73,3 +73,30 @@ def test_verdict_gate(target_info):
 def test_no_gate_name_starts_with_test():
     assert not [n for n in dir(gates) if n.startswith("test")]
 
+
+
+# --- web citations ---------------------------------------------------------------
+
+WEB = Citation(path="https://example.com/docs#older_than", line_start=1, line_end=1, quote="a duration")
+
+
+def test_finding_gate_allows_a_web_citation_after_a_repo_one(target_info):
+    f = high_finding()
+    repo_citation = f.citations[0].model_dump()
+    assert gates.finding_gate(target_info, f.with_location(citations=[repo_citation, WEB.model_dump()])).passed
+
+
+def test_finding_gate_rejects_a_web_citation_first_or_alone(target_info):
+    f = high_finding()
+    repo_citation = f.citations[0].model_dump()
+    alone = gates.finding_gate(target_info, f.with_location(citations=[WEB.model_dump()]))
+    assert not alone.passed and "web source" in alone.reason
+    first = gates.finding_gate(target_info, f.with_location(citations=[WEB.model_dump(), repo_citation]))
+    assert not first.passed and "web source" in first.reason
+
+
+def test_verdict_gate_does_not_confirm_on_a_web_citation_alone(target_info):
+    web_only = Verdict(status="confirmed", reason="r", citations=[WEB])
+    result = gates.verdict_gate(target_info, web_only)
+    assert result.action == "downgrade" and "web source" in result.reason
+    assert gates.verdict_gate(target_info, Verdict(status="confirmed", reason="r", citations=[WEB, KEYWORD_CITATION])).passed

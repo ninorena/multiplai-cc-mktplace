@@ -102,6 +102,12 @@ class Resolved:
     head_sha: str | None
     pr: int | None = None
     problem: str = ""
+    title: str = ""
+    description: str = ""
+    base_ref: str = ""
+
+
+PR_VIEW_FIELDS = "headRefOid,baseRefOid,headRefName,baseRefName,title,body"
 
 
 def _pr_view(repo: Path, number: int) -> dict:
@@ -111,12 +117,39 @@ def _pr_view(repo: Path, number: int) -> dict:
             "--pr needs the GitHub CLI (`gh`), which is not installed. Install it from "
             "https://cli.github.com and run `gh auth login`, or pass --range <base>..<head>.")
     proc = subprocess.run(
-        [gh, "pr", "view", str(number), "--json", "headRefOid,baseRefOid,headRefName"],
+        [gh, "pr", "view", str(number), "--json", PR_VIEW_FIELDS],
         cwd=repo, capture_output=True, text=True, stdin=subprocess.DEVNULL, shell=False, check=False,
     )
     if proc.returncode != 0:
         raise TargetError(f"gh pr view {number} failed: {proc.stderr.strip()}")
     return json.loads(proc.stdout)
+
+
+def branch_rules(repo: Path, branch: str) -> list[dict] | None:
+    """GitHub's rules on *branch* (rulesets and classic protection, merged by GitHub).
+
+    `gh api` fills `{owner}` and `{repo}` from the repository's origin. `[]`
+    means GitHub reports no rules. A missing `gh`, a non-GitHub remote or an
+    API error gives None and a warning: the review goes on without this
+    context rather than failing.
+    """
+    gh = shutil.which("gh")
+    if gh is None or not branch or github_web_base(remote_url(repo)) is None:
+        return None
+    proc = subprocess.run(
+        [gh, "api", f"repos/{{owner}}/{{repo}}/rules/branches/{branch}"],
+        cwd=repo, capture_output=True, text=True, stdin=subprocess.DEVNULL, shell=False, check=False,
+    )
+    if proc.returncode != 0:
+        log.warning("gh api rules/branches/%s failed; reviewing without branch rules: %s",
+                    branch, proc.stderr.strip()[:300])
+        return None
+    try:
+        rules = json.loads(proc.stdout)
+    except ValueError:
+        log.warning("gh api rules/branches/%s returned no JSON; reviewing without branch rules", branch)
+        return None
+    return [r for r in rules if isinstance(r, dict)] if isinstance(rules, list) else None
 
 
 def resolve(repo: str | Path, *, branch: str | None = None, pr: int | None = None,
@@ -139,7 +172,7 @@ def resolve(repo: str | Path, *, branch: str | None = None, pr: int | None = Non
         problem = "" if head else f"origin/{branch} not found (pass --fetch to fetch it)"
         if head and not base:
             problem = f"no merge-base between origin/{default} and origin/{branch}"
-        return Resolved(repo, "branch", branch, base, head, problem=problem)
+        return Resolved(repo, "branch", branch, base, head, problem=problem, base_ref=default)
 
     if pr is not None and pr != "":
         info = _pr_view(repo, int(pr))
@@ -151,7 +184,9 @@ def resolve(repo: str | Path, *, branch: str | None = None, pr: int | None = Non
             problem = f"PR #{pr} head {info['headRefOid'][:12]} is not in this clone (pass --fetch)"
         elif not base:
             problem = f"PR #{pr} base {info['baseRefOid'][:12]} is not in this clone (pass --fetch)"
-        return Resolved(repo, "pr", str(pr), base, head, pr=int(pr), problem=problem)
+        return Resolved(repo, "pr", str(pr), base, head, pr=int(pr), problem=problem,
+                        title=(info.get("title") or "").strip(), description=(info.get("body") or "").strip(),
+                        base_ref=info.get("baseRefName") or "")
 
     range_ = range_ or ""
     if ".." not in range_ or range_.count("..") != 1 or "..." in range_:
@@ -196,6 +231,8 @@ def build_target(resolved: Resolved, *, tickets: list[str] | None = None,
         repo_path=str(repo), remote_url=remote_url(repo), base_sha=base, head_sha=head,
         commits=commits, files=files, slug=slug, label=label, kind=resolved.kind,
         ref=resolved.ref, pr=resolved.pr, tickets=list(tickets or []), deployed_in=deployed_in,
+        title=resolved.title, description=resolved.description, base_ref=resolved.base_ref,
+        branch_rules=branch_rules(repo, resolved.base_ref) if resolved.base_ref else None,
     )
 
 

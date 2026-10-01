@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from ..models import Finding, TargetInfo
-from . import CITATION_RULES, JSON_ONLY, workspace_block
+from . import CITATION_RULES, JSON_ONLY, description_block, settings_block, workspace_block
 
 SCHEMA = """\
 {"status": "confirmed" | "refuted" | "unverifiable",
@@ -16,10 +16,12 @@ SCHEMA = """\
 
 def build(target: TargetInfo, finding: Finding) -> str:
     cited = json.dumps([c.model_dump() for c in finding.citations], indent=1)
-    return "\n\n".join([
+    return "\n\n".join(p for p in [
         "You are checking one claim from a code review. You did not write it; assume nothing it says "
         "until you have read the code yourself.",
-        workspace_block(target),
+        workspace_block(target, web=True),
+        description_block(target),
+        settings_block(target),
         f"Claim ({finding.severity}) about `{finding.file}` lines {finding.line_start}-{finding.line_end}:\n"
         f"{finding.claim}",
         f"Failure scenario given:\n{finding.failure_scenario}",
@@ -28,8 +30,11 @@ def build(target: TargetInfo, finding: Finding) -> str:
         "this code, the settings it reads. Then answer:\n"
         "- `confirmed`: the failure scenario can happen. Cite the lines that make it happen.\n"
         "- `refuted`: the code shows it cannot happen. Cite the lines that prevent it.\n"
-        "- `unverifiable`: it depends on something outside this repository (production data, a "
-        "vendor's configuration, runtime values) or the code does not settle it. Say what is missing.\n"
+        "- `unverifiable`: it depends on something you could not read (production data, a vendor's "
+        "configuration, runtime values, a dependency whose source or documentation you could not reach "
+        "on the web) or the code does not settle it. Say what is missing. When part of the claim holds "
+        "in this repository and part depends on something you could not read, the answer is "
+        "`unverifiable`, not `confirmed` with a caveat.\n"
         "A `confirmed` answer without a citation that a program can find at the cited lines is "
         "recorded as `unverifiable`.",
         "Unless you answer `refuted`, set `expected_behaviour`: state what correct behaviour would be, in "
@@ -38,4 +43,4 @@ def build(target: TargetInfo, finding: Finding) -> str:
         CITATION_RULES,
         f"Schema:\n{SCHEMA}",
         JSON_ONLY,
-    ])
+    ] if p)

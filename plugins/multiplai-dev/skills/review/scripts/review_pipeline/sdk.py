@@ -10,7 +10,9 @@ Re-running the whole prompt would repeat the review (a finder re-ask took 68
 turns and cost as much as the first attempt). A run that failed returned no
 text, so its re-ask re-runs the prompt.
 
-Every stage gets `Read`, `Grep` and `Glob` and nothing else, so the pipeline is
+Every stage gets `Read`, `Grep` and `Glob`; finders and verifiers also get
+`WebFetch` and `WebSearch`, to look up how a dependency behaves at the version
+the repository pins. No stage can run a command or write, so the pipeline is
 read-only over the reviewed code by construction.
 """
 
@@ -38,7 +40,9 @@ REFORMAT_MAX_TURNS = 1
 REFORMAT_MAX_ANSWER_CHARS = 60_000
 
 READ_ONLY_TOOLS = ["Read", "Grep", "Glob"]
-FINDER_TOOLS = VERIFIER_TOOLS = MERGER_TOOLS = READ_ONLY_TOOLS
+WEB_TOOLS = ["WebFetch", "WebSearch"]
+FINDER_TOOLS = VERIFIER_TOOLS = READ_ONLY_TOOLS + WEB_TOOLS
+MERGER_TOOLS = READ_ONLY_TOOLS  # deciding whether two findings are one needs no web
 
 # The deny-list is the complement of each call's allow-list within this
 # universe. Under bypassPermissions an allow-list alone removes nothing, so

@@ -18,6 +18,15 @@ from review_pipeline.models import Citation, Finding, Rejected, ReviewState, Ver
 
 SCHEMA = TESTS.parents[2] / "review-viewer" / "schema" / "findings.v1.schema.json"
 
+# The real function, for the tests that exercise it; every other test gets
+# the stub below so nothing here calls `gh`.
+REAL_BRANCH_RULES = target.branch_rules
+
+
+@pytest.fixture(autouse=True)
+def no_gh_branch_rules(monkeypatch):
+    monkeypatch.setattr(target, "branch_rules", lambda repo, branch: None)
+
 CLAIM_HIGH = "Rate-plan eligibility depends on the hardcoded keyword 'dolcebot'"
 CLAIM_MEDIUM = "eligible_rate_plans lower-cases the title but not the keyword"
 CLAIM_REFUTED = "build_payload drops the booking id"

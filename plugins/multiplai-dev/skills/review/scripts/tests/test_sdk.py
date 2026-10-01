@@ -53,17 +53,21 @@ async def test_read_only_tools_and_their_complement(trusted, fake_run):
                                           budget_label="find:diff-bugs", model="m", effort="high")
     assert out.value == 3
     call = calls[0]
-    assert call["allowed_tools"] == ["Read", "Grep", "Glob"]
-    for tool in ("Bash", "Edit", "Write", "WebFetch", "WebSearch"):
+    assert call["allowed_tools"] == ["Read", "Grep", "Glob", "WebFetch", "WebSearch"]
+    for tool in ("Bash", "Edit", "Write", "Agent", "Skill"):
         assert tool in call["disallowed_tools"]
-    assert not {"Read", "Grep", "Glob"} & set(call["disallowed_tools"])
+    assert not {"Read", "Grep", "Glob", "WebFetch", "WebSearch"} & set(call["disallowed_tools"])
     assert (call["cwd"], call["component"], call["label"], call["model"], call["effort"]) == \
         ("/repo", "review", "find:diff-bugs", "m", "high")
 
 
-def test_every_stage_gets_only_read_grep_glob():
+def test_finders_and_verifiers_read_and_browse_the_merger_only_reads():
+    assert sdk.FINDER_TOOLS == sdk.VERIFIER_TOOLS == ["Read", "Grep", "Glob", "WebFetch", "WebSearch"]
+    assert sdk.MERGER_TOOLS == ["Read", "Grep", "Glob"]
     for tools in (sdk.FINDER_TOOLS, sdk.VERIFIER_TOOLS, sdk.MERGER_TOOLS):
-        assert tools == ["Read", "Grep", "Glob"]
+        assert not {"Bash", "Edit", "Write", "Agent"} & set(tools)
+        assert "WebFetch" in sdk.deny_list("p", sdk.MERGER_TOOLS)
+        assert "WebFetch" not in sdk.deny_list("p", sdk.FINDER_TOOLS)
 
 
 async def test_an_unparsable_answer_is_reformatted_without_tools_not_rerun(trusted, fake_run):

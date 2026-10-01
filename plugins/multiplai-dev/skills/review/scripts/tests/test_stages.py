@@ -26,7 +26,8 @@ class Canned:
 
     async def __call__(self, prompt, schema, *, budget_label="", **kwargs):
         self.calls.append((budget_label, prompt))
-        assert kwargs["allowed_tools"] == ["Read", "Grep", "Glob"]
+        expected = ["Read", "Grep", "Glob"] if budget_label == "merge" else ["Read", "Grep", "Glob", "WebFetch", "WebSearch"]
+        assert kwargs["allowed_tools"] == expected
         answer = self.answers[budget_label].pop(0)
         if isinstance(answer, Exception):
             raise answer
