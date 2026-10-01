@@ -26,7 +26,10 @@ are the release dates recorded at the time, not derived from a tag.
   first, under `## Principles`, each with its 1 or 2 clearest learnings. A `yes`
   adds the sentence to `memory/principles.md` as `P<n>`, writes the examples to
   `memory/principles-examples.md` under that number, and moves every learning
-  behind it to `learnings/archived/rolled-up.md`. A `no` records the sentence in
+  behind it to `learnings/archived/rolled-up.md`. The model also marks which of
+  those learnings carry a fact worth keeping in their own target file (a path, a
+  name, a source of truth). Those stay in their queues after a yes and come up as
+  facts. A `no` records the sentence in
   `archived/rejected-principles.md`, which the model is shown next time, and
   leaves the learnings in their queues. The model can also offer learnings as
   more examples of a principle already in the book. Nothing is deleted.
@@ -36,8 +39,9 @@ are the release dates recorded at the time, not derived from a tag.
 
 ### Changed
 
-- **The facts part of the daily review shows 1 entry per file, down from 2.**
-  Learnings behind a waiting principle are not shown as facts.
+- **The facts part of the daily review shows the 5 best-ranked entries across
+  every file, down from 2 per file.** On real data that was 5 entries instead of
+  46. Learnings behind a waiting principle are not shown as facts.
 - If the principles call fails or returns something unreadable, the review is
   written with its facts part only and the output says `Principles step skipped`.
 

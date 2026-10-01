@@ -263,16 +263,31 @@ class TestQueueLimit:
 
 
 class TestReviewFile:
-    def test_at_most_one_per_file(self, env):
+    def test_at_most_five_a_day_across_all_files(self, env):
         dirs, store = env
         fill(dirs, store, 8, "me.md")
         fill(dirs, store, 8, "project.md", start=50)
         dr.rebalance(store, today=TODAY)
         path, n = dr.build_review(store, dirs, today=TODAY)
         items = dr.parse_review(path.read_text())
-        assert n == 2 and len(items) == 2
-        for t in ("me.md", "project.md"):
-            assert sum(1 for i in items if i.target == t) == 1
+        assert n == dr.FACTS_PER_DAY == 5 and len(items) == 5
+
+    def test_the_five_are_the_best_ranked_whatever_their_file(self, env):
+        dirs, store = env
+        fill(dirs, store, 6, "me.md")
+        put(dirs, "c.md", raw(("2026-09-29T10:00:00", "sc", [
+            line(f"correction subject{i} zeta{i} eta{i}", "project.md", typ="CORRECTION") for i in range(3)])))
+        dr.ingest(store)
+        path, _ = dr.build_review(store, dirs, today=TODAY)
+        items = dr.parse_review(path.read_text())
+        assert [i.target for i in items[:3]] == ["project.md"] * 3
+
+    def test_per_file_still_caps_one_file(self, env):
+        dirs, store = env
+        fill(dirs, store, 8, "me.md")
+        fill(dirs, store, 8, "project.md", start=50)
+        path, n = dr.build_review(store, dirs, today=TODAY, per_file=1)
+        assert n == 2
 
     def test_the_file_shows_the_exact_edit_and_three_boxes(self, env):
         dirs, store = env

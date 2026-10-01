@@ -38,7 +38,7 @@ def ids_for(prompt, words):
     return out
 
 
-def model_answer(principles=(), support=()):
+def model_answer(principles=(), support=(), facts=()):
     """A stand-in model. Each principle is (sentence, words that pick its learnings)."""
     calls = []
 
@@ -47,7 +47,8 @@ def model_answer(principles=(), support=()):
         ps = []
         for sentence, words in principles:
             ids = ids_for(prompt, words)
-            ps.append({"sentence": sentence, "entries": ids, "examples": ids[:1]})
+            ps.append({"sentence": sentence, "entries": ids, "examples": ids[:1],
+                       "facts": ids_for(prompt, list(facts)) if facts else []})
         ss = []
         for number, words in support:
             ids = ids_for(prompt, words)
@@ -106,7 +107,7 @@ class TestReviewFile:
         assert "### Principle A" in text and CHECK_P[0] in text
         assert "Behind it: 4 learning(s), for me.md." in text
         facts = dr.parse_review(text)
-        assert len(facts) == 1
+        assert len(facts) == 2
         shown = text.split("## Facts", 1)[1]
         assert not any(c in shown for c in CHECK)
 
@@ -174,6 +175,21 @@ class TestApply:
         assert "Result: added as P1 on 2026-10-01" in path.read_text()
         assert pr.load_pending(store) == []
 
+    def test_a_learning_marked_as_a_fact_stays_waiting_after_a_yes(self, run):
+        dream, dirs, store, go = run
+        seed(dirs, CHECK)
+        path = go(model_answer([CHECK_P], facts=["confirm with"]))
+        assert "After a yes, 1 of them still come up as facts" in path.read_text()
+        before = sorted(everywhere(store))
+        tick_principle(path, "Principle A", "yes")
+        dream._daily_apply(None, TODAY)
+        assert len(store.read(pr.rolled_up_path(store))) == 3
+        left = store.queue("me.md")
+        assert len(left) == 1 and "confirm with" in left[0].line and left[0].meta["principle"] == "P1"
+        assert sorted(everywhere(store)) == before
+        path2 = go(model_answer(), TOMORROW)
+        assert any(i.key == left[0].key for i in dr.parse_review(path2.read_text()))
+
     def test_an_edited_sentence_is_what_goes_in_the_book(self, run):
         dream, dirs, store, go = run
         seed(dirs, CHECK)
@@ -196,8 +212,8 @@ class TestApply:
         ask = model_answer()
         path2 = go(ask, TOMORROW)
         assert CHECK_P[0] in ask.calls[0].split("## Learnings")[0]
-        # Back as single facts: one per file per day.
-        assert len(dr.parse_review(path2.read_text())) == 1
+        # Back as single facts, at most FACTS_PER_DAY of them.
+        assert len(dr.parse_review(path2.read_text())) == dr.FACTS_PER_DAY
 
     def test_a_full_book_refuses_and_changes_nothing(self, run):
         dream, dirs, store, go = run

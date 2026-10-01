@@ -22,7 +22,8 @@ including every `left` line and its reason.
 
 - **Principles part.** `yes` adds the sentence to `memory/principles.md` as the next
   `P<n>`, writes its 1 or 2 examples to `memory/principles-examples.md` under that
-  number, and moves every learning behind it to `archived/rolled-up.md`. A full book
+  number, and moves the learnings behind it to `archived/rolled-up.md`. Learnings the
+  model marked as also carrying a fact stay in their queues and come up as facts. A full book
   (40) refuses the yes. `no` records the sentence in `archived/rejected-principles.md`,
   and its learnings stay in their queues as facts. For "More examples for P<n>", `yes`
   adds the examples and `no` records that those learnings are not examples of it.

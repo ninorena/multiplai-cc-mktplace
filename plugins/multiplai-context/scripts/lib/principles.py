@@ -19,7 +19,8 @@ Where things live
                                       examples of a principle.
 
 **Nothing is deleted.** A yes moves the learnings behind a principle to
-``rolled-up.md``. A no leaves them in their queues, where the facts part of the
+``rolled-up.md``, except those the model marked as also carrying a fact for their
+own target file. Those stay in their queues and come up as facts. A no leaves them in their queues, where the facts part of the
 review shows them one at a time.
 
 The model step is the only part that can fail for reasons outside this code.
@@ -82,6 +83,8 @@ class Candidate:
     examples: list[str]             # 1 or 2 of those keys
     existing: str = ""              # "P3" when these are more examples for P3
     proposed: str = ""              # date first proposed
+    facts: list[str] = field(default_factory=list)  # keys that also carry a fact
+                                    # worth keeping in their own target file
     id: str = field(default="")
 
     def __post_init__(self):
@@ -160,6 +163,7 @@ def prune_pending(store: Store, pending: list[Candidate]) -> list[Candidate]:
             continue
         c.keys = keys
         c.examples = [k for k in c.examples if k in keys] or keys[:MAX_EXAMPLES]
+        c.facts = [k for k in c.facts if k in keys]
         out.append(c)
     return out
 
@@ -232,14 +236,17 @@ Rules:
 - A new principle needs at least {MIN_ENTRIES} learnings behind it. If fewer fit, do not propose it.
 - Each learning can sit behind at most one principle. Most learnings will fit none. That is fine.
 - Pick the 1 or 2 learnings that show the principle most clearly as examples.
+- Under "facts", list the learnings behind a principle that also state a specific
+  fact worth keeping in their own target file: a path, a name, a setting, a source of
+  truth for one project. Leave out learnings the principle fully covers.
 - Do not restate a principle already in the book, or one the person rejected.
 - If learnings are new instances of a principle already in the book, list them
   under "support" with that principle's number instead.
 - Propose at most {MAX_NEW} new principles. Prefer the ones with the most learnings behind them.
 
 Answer with JSON only, no prose, in this shape:
-{{"principles": [{{"sentence": "...", "entries": ["e1", "e4", "e9"], "examples": ["e4"]}}],
- "support": [{{"principle": "P3", "entries": ["e2"], "examples": ["e2"]}}]}}
+{{"principles": [{{"sentence": "...", "entries": ["e1", "e4", "e9"], "examples": ["e4"], "facts": ["e9"]}}],
+ "support": [{{"principle": "P3", "entries": ["e2"], "examples": ["e2"], "facts": []}}]}}
 """
 
 
@@ -289,6 +296,9 @@ def parse_candidates(text: str, idmap: dict[str, Entry], *, book_numbers: set[st
         ex = [k for k in keys_of(ids) if k in keys][:MAX_EXAMPLES]
         return ex or keys[:MAX_EXAMPLES]
 
+    def facts_of(ids, keys) -> list[str]:
+        return [k for k in keys_of(ids) if k in keys]
+
     new = 0
     for p in data.get("principles") or []:
         if new >= max_new or not isinstance(p, dict):
@@ -300,7 +310,8 @@ def parse_candidates(text: str, idmap: dict[str, Entry], *, book_numbers: set[st
         if len(keys) < MIN_ENTRIES:
             continue
         out.append(Candidate(sentence=sentence, keys=keys,
-                             examples=examples_of(p.get("examples"), keys), proposed=today))
+                             examples=examples_of(p.get("examples"), keys),
+                             facts=facts_of(p.get("facts"), keys), proposed=today))
         used.update(keys)
         new += 1
 
@@ -314,7 +325,7 @@ def parse_candidates(text: str, idmap: dict[str, Entry], *, book_numbers: set[st
         if not keys:
             continue
         out.append(Candidate(sentence="", keys=keys, examples=examples_of(s.get("examples"), keys),
-                             existing=number, proposed=today))
+                             facts=facts_of(s.get("facts"), keys), existing=number, proposed=today))
         used.update(keys)
     return out
 
@@ -355,6 +366,8 @@ def render_block(letter: str, c: Candidate, store: Store, book: dict[str, str]) 
     lines.append("Examples:")
     lines += [f"- {entries[k].description}" for k in c.examples if k in entries]
     lines.append(f"Behind it: {len(c.keys)} learning(s), for {', '.join(targets) or '?'}.")
+    if c.facts:
+        lines.append(f"After a yes, {len(c.facts)} of them still come up as facts for their own file.")
     lines += ["- [ ] yes", "- [ ] no", "- [ ] later"]
     return "\n".join(lines)
 
@@ -510,7 +523,17 @@ def apply_principles(path: Path, store: Store, dirs: Dirs, *, today: str) -> Pri
                 bt = bp.read_text(encoding="utf-8") if bp.exists() else _BOOK_HEAD
                 _atomic_write(bp, bt.rstrip("\n") + f"\n- {number}. {sentence}\n")
                 rep.written_files.append(bp)
-            for k, (src, _) in found.items():
+            for k, (src, e) in found.items():
+                if k in c.facts:
+                    # Still a fact for its own file: it stays waiting, tagged, and
+                    # the facts part of a later review shows it.
+                    e.meta["principle"] = number
+                    entries = store.read(src)
+                    for x in entries:
+                        if x.key == k:
+                            x.meta["principle"] = number
+                    store.write(src, entries)
+                    continue
                 store.move(k, src, rolled_up_path(store), principle=number, rolled_up=today,
                            example=k in c.examples)
         except OSError as exc:

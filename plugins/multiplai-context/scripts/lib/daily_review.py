@@ -25,8 +25,8 @@ does not understand stays where it is.
 
 The review file
 ---------------
-``<dreams>/review-YYYY-MM-DD.md`` holds, for each queue, the top
-``PER_FILE_PER_DAY`` entries. Under each entry is the exact text that will be
+``<dreams>/review-YYYY-MM-DD.md`` holds the ``FACTS_PER_DAY`` best-ranked
+entries across every queue. Under each entry is the exact text that will be
 added, the section it goes under, and three boxes. :func:`apply_review` reads
 the ticks and applies only the ``yes`` entries. The text under ``Add:`` is what
 gets written, so the user can edit it before ticking.
@@ -48,7 +48,8 @@ from pathlib import Path
 from typing import Callable
 
 QUEUE_MAX = 10
-PER_FILE_PER_DAY = 1
+# Facts shown in one review, best-ranked across every queue.
+FACTS_PER_DAY = 5
 RESERVE_DAYS = 90
 # Two wordings of one fact, measured on 452 real learnings: true paraphrases
 # scored Jaccard 0.35-0.44 and containment 0.56-0.69 once stop words were
@@ -668,8 +669,8 @@ def render_review_block(n: int, e: Entry, dirs: Dirs, *, expected_hash: str | No
     return "\n".join(lines)
 
 
-def build_review(store: Store, dirs: Dirs, *, today: str, per_file: int = PER_FILE_PER_DAY,
-                 principles_section: str = "",
+def build_review(store: Store, dirs: Dirs, *, today: str, total: int = FACTS_PER_DAY,
+                 per_file: int | None = None, principles_section: str = "",
                  exclude: frozenset[str] | set[str] = frozenset()) -> tuple[Path | None, int]:
     """Write today's review file. Returns (path, fact entries). An existing file is kept.
 
@@ -680,13 +681,15 @@ def build_review(store: Store, dirs: Dirs, *, today: str, per_file: int = PER_FI
     path = review_path(dirs, today)
     if path.exists():
         return path, len(parse_review(path.read_text(encoding="utf-8")))
+    waiting: list[Entry] = []
+    for target in store.queue_targets():
+        mine = rank_sorted([e for e in store.queue(target) if e.key not in exclude])
+        waiting += mine[:per_file] if per_file else mine
     blocks: list[str] = []
     n = 0
-    for target in store.queue_targets():
-        waiting = [e for e in store.queue(target) if e.key not in exclude]
-        for e in rank_sorted(waiting)[:per_file]:
-            n += 1
-            blocks.append(render_review_block(n, e, dirs, twins=store.twins(e)))
+    for e in rank_sorted(waiting)[:total]:
+        n += 1
+        blocks.append(render_review_block(n, e, dirs, twins=store.twins(e)))
     if not blocks and not principles_section:
         return None, 0
     head = (
@@ -699,7 +702,7 @@ def build_review(store: Store, dirs: Dirs, *, today: str, per_file: int = PER_FI
     if principles_section:
         body += "\n" + principles_section
     if blocks:
-        body += "\n## Facts\n\nLearnings that fit no principle, one per file.\n\n" + "\n\n".join(blocks) + "\n"
+        body += f"\n## Facts\n\nThe {total} best-ranked learnings that sit behind no principle, across every file.\n\n" + "\n\n".join(blocks) + "\n"
     _atomic_write(path, head + body)
     return path, n
 

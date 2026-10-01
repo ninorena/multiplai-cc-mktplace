@@ -50,7 +50,7 @@ Run `/multiplai-context:dream-remember` to load the proposal and apply approved 
 
 ---
 
-## Daily review (`--daily-review`): principles, then one fact per file, per day
+## Daily review (`--daily-review`): principles, then 5 facts, per day
 
 The routine path. One model call, deletes nothing:
 
@@ -72,7 +72,7 @@ uv run --project "${CLAUDE_PLUGIN_ROOT}/scripts" "${CLAUDE_PLUGIN_ROOT}/scripts/
    `later` come back without a new call. If the call fails, the output says
    `Principles step skipped` and the review has facts only.
 4. `.multiplai/dreams/review-YYYY-MM-DD.md` gets a `## Principles` part, then a
-   `## Facts` part with the top 1 of each queue. Learnings behind a waiting principle are
+   `## Facts` part with the 5 best-ranked entries across every queue. Learnings behind a waiting principle are
    not shown as facts. Every item has three boxes. An existing file for the day is kept,
    not overwritten, and no model call is made.
 
