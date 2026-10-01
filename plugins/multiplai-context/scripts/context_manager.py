@@ -115,6 +115,8 @@ def _iter_markdown_files(directory: Path):
 
 # Scoring weights for metadata-first ranking (R2 mitigation)
 _RECENCY_WEIGHT = 0.7
+# Same list as generators/memory.py _NOT_ROUTED.
+_NOT_ROUTED_MEMORY = frozenset({"claude.md", "principles.md", "principles-examples.md"})
 _SIZE_WEIGHT = 0.3
 _RECENCY_DECAY_DAYS = 60
 _SIZE_NORM_BYTES = 10_000
@@ -135,7 +137,7 @@ def _rank_memory_files(memory_dir: Path) -> list[RankedFile]:
         # recency fallback consistent — it ranks by mtime/size, and the
         # index is both recently touched and large, so it would otherwise
         # top this ranking.
-        if f.name.lower() == "claude.md":
+        if f.name.lower() in _NOT_ROUTED_MEMORY:
             continue
         try:
             st = f.stat()

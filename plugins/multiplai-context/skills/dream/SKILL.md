@@ -50,9 +50,9 @@ Run `/multiplai-context:dream-remember` to load the proposal and apply approved 
 
 ---
 
-## Daily review (`--daily-review`): two entries per file, per day
+## Daily review (`--daily-review`): principles, then 5 facts, per day
 
-The routine path. Pure code, no model call, seconds to run, deletes nothing:
+The routine path. One model call, deletes nothing:
 
 ```
 uv run --project "${CLAUDE_PLUGIN_ROOT}/scripts" "${CLAUDE_PLUGIN_ROOT}/scripts/dream.py" --daily-review
@@ -66,8 +66,15 @@ uv run --project "${CLAUDE_PLUGIN_ROOT}/scripts" "${CLAUDE_PLUGIN_ROOT}/scripts/
    sessions, then `verified`, then newest. The rest go to `archived/reserve.md`. A queue
    under 10 refills from the reserve. Reserve entries older than 90 days move to
    `archived/rejected.md`.
-3. `.multiplai/dreams/review-YYYY-MM-DD.md` gets the top 2 of each queue, with the exact
-   text to add and three boxes. An existing file for the day is kept, not overwritten.
+3. One model call groups the queued learnings into up to 3 candidate principles: one
+   sentence each, with 3 or more learnings behind it. It can also mark learnings as new
+   examples of a principle already in `memory/principles.md`. Candidates the user ticked
+   `later` come back without a new call. If the call fails, the output says
+   `Principles step skipped` and the review has facts only.
+4. `.multiplai/dreams/review-YYYY-MM-DD.md` gets a `## Principles` part, then a
+   `## Facts` part with the 5 best-ranked entries across every queue. Learnings behind a waiting principle are
+   not shown as facts. Every item has three boxes. An existing file for the day is kept,
+   not overwritten, and no model call is made.
 
 Report the counts and the review file path. Then remind the user to tick the boxes and
 run `/multiplai-context:dream-remember --daily`. Do not tick anything.

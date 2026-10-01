@@ -17,10 +17,19 @@ uv run --project "${CLAUDE_PLUGIN_ROOT}/scripts" "${CLAUDE_PLUGIN_ROOT}/scripts/
 ```
 
 It reads `.multiplai/dreams/review-YYYY-MM-DD.md` (add `--review <file>` for another
-day's file), applies only the entries with `yes` ticked, and moves `no` entries to
-`.multiplai/learnings/archived/rejected.md`. `later` and no tick leave the entry in its
-queue. Pure code, no model call. Relay its output as printed, including every `left` line
-and its reason. Nothing is deleted: an applied entry moves to `archived/applied.md`.
+day's file). Pure code, no model call. Nothing is deleted. Relay its output as printed,
+including every `left` line and its reason.
+
+- **Principles part.** `yes` adds the sentence to `memory/principles.md` as the next
+  `P<n>`, writes its 1 or 2 examples to `memory/principles-examples.md` under that
+  number, and moves the learnings behind it to `archived/rolled-up.md`. Learnings the
+  model marked as also carrying a fact stay in their queues and come up as facts. A full book
+  (40) refuses the yes. `no` records the sentence in `archived/rejected-principles.md`,
+  and its learnings stay in their queues as facts. For "More examples for P<n>", `yes`
+  adds the examples and `no` records that those learnings are not examples of it.
+- **Facts part.** `yes` applies the entry and moves it to `archived/applied.md`. `no`
+  moves it to `archived/rejected.md`.
+- `later` and no tick leave everything where it is.
 
 If it reports a target file changed, the review file now shows the new edit under a
 `CHANGED:` line with the boxes cleared. Tell the user to check it and tick again.

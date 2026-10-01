@@ -263,16 +263,31 @@ class TestQueueLimit:
 
 
 class TestReviewFile:
-    def test_at_most_two_per_file(self, env):
+    def test_at_most_five_a_day_across_all_files(self, env):
         dirs, store = env
         fill(dirs, store, 8, "me.md")
         fill(dirs, store, 8, "project.md", start=50)
         dr.rebalance(store, today=TODAY)
         path, n = dr.build_review(store, dirs, today=TODAY)
         items = dr.parse_review(path.read_text())
-        assert n == 4 and len(items) == 4
-        for t in ("me.md", "project.md"):
-            assert sum(1 for i in items if i.target == t) == 2
+        assert n == dr.FACTS_PER_DAY == 5 and len(items) == 5
+
+    def test_the_five_are_the_best_ranked_whatever_their_file(self, env):
+        dirs, store = env
+        fill(dirs, store, 6, "me.md")
+        put(dirs, "c.md", raw(("2026-09-29T10:00:00", "sc", [
+            line(f"correction subject{i} zeta{i} eta{i}", "project.md", typ="CORRECTION") for i in range(3)])))
+        dr.ingest(store)
+        path, _ = dr.build_review(store, dirs, today=TODAY)
+        items = dr.parse_review(path.read_text())
+        assert [i.target for i in items[:3]] == ["project.md"] * 3
+
+    def test_per_file_still_caps_one_file(self, env):
+        dirs, store = env
+        fill(dirs, store, 8, "me.md")
+        fill(dirs, store, 8, "project.md", start=50)
+        path, n = dr.build_review(store, dirs, today=TODAY, per_file=1)
+        assert n == 2
 
     def test_the_file_shows_the_exact_edit_and_three_boxes(self, env):
         dirs, store = env
@@ -326,7 +341,8 @@ def tick(path, n, what):
 def review_for(dirs, store, target="me.md", n=2, body="# me\n\n## Notes\n- old\n\n## Other\n- x\n"):
     (dirs.memory / target).write_text(body)
     fill(dirs, store, n, target)
-    path, _ = dr.build_review(store, dirs, today=TODAY)
+    # per_file=n: these tests apply several entries for one file in one run.
+    path, _ = dr.build_review(store, dirs, today=TODAY, per_file=n)
     return path
 
 
@@ -513,7 +529,7 @@ class TestApply:
         (dirs.memory / "me.md").write_text("# me\n")
         dr.rebalance(store, today=TODAY)
         before = total_entries(store)
-        path, _ = dr.build_review(store, dirs, today=TODAY)
+        path, _ = dr.build_review(store, dirs, today=TODAY, per_file=2)
         tick(path, 1, "yes")
         tick(path, 2, "no")
         dr.apply_review(path, store, dirs, today=TODAY)
@@ -551,6 +567,12 @@ def dream_env(env, monkeypatch):
     monkeypatch.setattr(dream, "get_paths", lambda: P())
     monkeypatch.setattr(dream, "acquire_run_lock", lambda: True)
     monkeypatch.setattr(dream, "_commit_memory_changes", lambda *a, **k: True)
+
+    async def no_principles(prompt):
+        return '{"principles": [], "support": []}'
+
+    # Never reach a real model from a test.
+    monkeypatch.setattr(dream, "_ask_for_principles", no_principles)
     return dream, dirs, store
 
 
@@ -565,7 +587,8 @@ class TestDreamCli:
         tick(review, 1, "yes")
         assert dream._daily_apply(None, "2026-09-30") == 0
         out = capsys.readouterr().out
-        assert "Applied 1" in out and "fact one" in (dirs.memory / "me.md").read_text() or "other fact two" in (dirs.memory / "me.md").read_text()
+        me = (dirs.memory / "me.md").read_text()
+        assert "Facts: applied 1" in out and ("fact one" in me or "other fact two" in me)
 
     def test_the_review_file_is_not_mistaken_for_a_proposal(self, dream_env):
         dream, dirs, store = dream_env
