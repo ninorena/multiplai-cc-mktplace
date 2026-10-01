@@ -42,6 +42,7 @@ from lib.daily_review import (
     _TICK_RE,
     _atomic_write,
     rank_sorted,
+    read_note,
 )
 
 BOOK = "principles.md"
@@ -55,6 +56,7 @@ MAX_NEW = 3            # new principles shown in one review
 MIN_ENTRIES = 3        # learnings behind a new principle; a first guess
 MAX_EXAMPLES = 2
 MAX_SENTENCE_CHARS = 240
+MAX_FEEDBACK = 20      # the user's notes shown to the model, newest first
 
 _BOOK_LINE_RE = re.compile(r"^- (?P<n>P\d+)\.\s+(?P<s>.+?)\s*$")
 _EX_HEAD_RE = re.compile(r"^##\s+(?P<n>P\d+)\.")
@@ -85,6 +87,7 @@ class Candidate:
     proposed: str = ""              # date first proposed
     facts: list[str] = field(default_factory=list)  # keys that also carry a fact
                                     # worth keeping in their own target file
+    notes: list[str] = field(default_factory=list)  # the user's notes on it
     id: str = field(default="")
 
     def __post_init__(self):
@@ -243,6 +246,8 @@ Rules:
 - If learnings are new instances of a principle already in the book, list them
   under "support" with that principle's number instead.
 - Propose at most {MAX_NEW} new principles. Prefer the ones with the most learnings behind them.
+- Nick's notes on earlier review items say what he wants. Follow them. A note can
+  apply beyond the one item it was written on.
 
 Answer with JSON only, no prose, in this shape:
 {{"principles": [{{"sentence": "...", "entries": ["e1", "e4", "e9"], "examples": ["e4"], "facts": ["e9"]}}],
@@ -251,7 +256,7 @@ Answer with JSON only, no prose, in this shape:
 
 
 def build_prompt(entries: list[Entry], book: list[tuple[str, str]],
-                 rejected: list[str]) -> tuple[str, dict[str, Entry]]:
+                 rejected: list[str], feedback: list[str] | None = None) -> tuple[str, dict[str, Entry]]:
     """The user message, and the short id -> entry map used to read the answer."""
     idmap: dict[str, Entry] = {}
     rows = []
@@ -263,6 +268,8 @@ def build_prompt(entries: list[Entry], book: list[tuple[str, str]],
     parts += [f"{n}. {s}" for n, s in book] or ["(empty)"]
     parts += ["", "## Rejected principles (do not propose these again)\n"]
     parts += [f"- {s}" for s in rejected] or ["(none)"]
+    parts += ["", "## Nick's notes on earlier review items\n"]
+    parts += [f"- {s}" for s in (feedback or [])] or ["(none)"]
     parts += ["", "## Learnings\n"] + rows
     return "\n".join(parts) + "\n", idmap
 
@@ -340,11 +347,32 @@ def model_input(store: Store, pending: list[Candidate]) -> list[Entry]:
 
 
 def rejected_sentences(store: Store) -> list[str]:
+    """Each rejected principle, with the user's reason when one was given."""
     p = rejected_principles_path(store)
     if not p.exists():
         return []
-    return [l[2:].split(" (said no", 1)[0] for l in p.read_text(encoding="utf-8").splitlines()
-            if l.startswith("- ")]
+    return [l[2:] for l in p.read_text(encoding="utf-8").splitlines() if l.startswith("- ")]
+
+
+def feedback_notes(store: Store, pending: list[Candidate], limit: int = MAX_FEEDBACK) -> list[str]:
+    """The user's notes on single learnings and on waiting principles, newest first.
+
+    Notes on rejected principles already reach the model with the rejected list.
+    """
+    dated: list[tuple[str, str]] = []
+    for path, verb in ((store.rejected_path, "said no to"), (store.applied_path, "said yes to")):
+        for e in store.read(path):
+            for n in e.meta.get("notes", []):
+                dated.append((e.meta.get("last", ""), f'On a learning he {verb} for {e.target} ("{e.description[:100]}"): {n}'))
+    for t in store.queue_targets():
+        for e in store.queue(t):
+            for n in e.meta.get("notes", []):
+                dated.append((e.meta.get("last", ""), f'On a waiting learning for {e.target} ("{e.description[:100]}"): {n}'))
+    for c in pending:
+        for n in c.notes:
+            dated.append((c.proposed, f'On the waiting principle "{c.sentence or c.existing}": {n}'))
+    dated.sort(key=lambda x: x[0], reverse=True)
+    return [s for _, s in dated[:limit]]
 
 
 # ---------------------------------------------------------------------------
@@ -368,7 +396,8 @@ def render_block(letter: str, c: Candidate, store: Store, book: dict[str, str]) 
     lines.append(f"Behind it: {len(c.keys)} learning(s), for {', '.join(targets) or '?'}.")
     if c.facts:
         lines.append(f"After a yes, {len(c.facts)} of them still come up as facts for their own file.")
-    lines += ["- [ ] yes", "- [ ] no", "- [ ] later"]
+    lines += [f"Earlier note: {n}" for n in c.notes]
+    lines += ["Note:", "- [ ] yes", "- [ ] no", "- [ ] later"]
     return "\n".join(lines)
 
 
@@ -401,6 +430,7 @@ class PItem:
     sentence: str
     ticks: list[str]
     result: str
+    note: str = ""
 
 
 def parse_blocks(text: str) -> list[PItem]:
@@ -428,7 +458,7 @@ def parse_blocks(text: str) -> list[PItem]:
             if l.startswith("Result:"):
                 result = l[len("Result:"):].strip()
         items.append(PItem(s, nxt, json.loads(hdr.group("json"))["id"],
-                           " ".join(" ".join(sent).split()), ticks, result))
+                           " ".join(" ".join(sent).split()), ticks, result, read_note(lines[s:nxt])))
     return items
 
 
@@ -462,9 +492,16 @@ def apply_principles(path: Path, store: Store, dirs: Dirs, *, today: str) -> Pri
 
     for snap in parse_blocks(text):
         item = next((i for i in parse_blocks(text) if i.id == snap.id), snap)
-        if item.result or not item.ticks or item.ticks == ["later"]:
+        if item.result:
             continue
         c = pending.get(item.id)
+        if c is not None and item.note and item.note not in c.notes:
+            # Kept on the candidate, so a "later" carries it into tomorrow's
+            # review and the next model call sees it.
+            c.notes.append(item.note)
+            save_pending(store, list(pending.values()))
+        if not item.ticks or item.ticks == ["later"]:
+            continue
         if c is None:
             rep.left.append((item.id, "no longer waiting; it was already handled"))
             continue
@@ -484,7 +521,8 @@ def apply_principles(path: Path, store: Store, dirs: Dirs, *, today: str) -> Pri
             else:
                 rp = rejected_principles_path(store)
                 old = rp.read_text(encoding="utf-8") if rp.exists() else ""
-                _atomic_write(rp, old + f"- {item.sentence or c.sentence} (said no on {today})\n")
+                why = f": {item.note}" if item.note else ""
+                _atomic_write(rp, old + f"- {item.sentence or c.sentence} (said no on {today}{why})\n")
             del pending[c.id]
             save_pending(store, list(pending.values()))
             text = _set_result(text, item, f"rejected {today}")
@@ -513,6 +551,7 @@ def apply_principles(path: Path, store: Store, dirs: Dirs, *, today: str) -> Pri
             rep.left.append((label, "none of its learnings are still waiting"))
             continue
         ex_lines = [_example_line(found[k][1]) for k in c.examples if k in found]
+        ex_lines += [f"- Nick's note: {n}" for n in c.notes]
         ex_path = dirs.memory / EXAMPLES
         ex_text = ex_path.read_text(encoding="utf-8") if ex_path.exists() else _EXAMPLES_HEAD
         try:

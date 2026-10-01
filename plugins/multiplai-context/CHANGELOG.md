@@ -16,6 +16,24 @@ are the release dates recorded at the time, not derived from a tag.
 
 ## [Unreleased]
 
+## [0.58.0] - 2026-10-01
+
+### Added
+
+- **A `Note:` line in every review item.** Write a note after `Note:` under any
+  principle or fact in the daily review file. `--daily` keeps it:
+  - on a fact you say no to, the note is the stored reason in
+    `archived/rejected.md`;
+  - on a principle you say no to, the note is saved next to it in
+    `archived/rejected-principles.md`;
+  - on a principle you say yes to, the note is saved under its number in
+    `memory/principles-examples.md`;
+  - on an item left for later, the note stays with it and shows again as
+    `Earlier note:`.
+  The next principles call shows the model your 20 newest notes. A note can
+  steer more than the one item it was written on. A line that starts
+  `Note (not written):` is the learning's own suggestion, not a note.
+
 ## [0.57.0] - 2026-10-01
 
 ### Added

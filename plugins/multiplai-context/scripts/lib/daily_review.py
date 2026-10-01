@@ -621,6 +621,9 @@ def cap_bytes(text: str) -> int | None:
 # ---------------------------------------------------------------------------
 
 _TICK_RE = re.compile(r"^- \[(?P<x>[ xX])\] (?P<what>yes|no|later)\s*$")
+# "Note:" exactly. The fact blocks also carry "Note (not written):", which is the
+# learning's own suggested action, so the colon must follow the word directly.
+_NOTE_RE = re.compile(r"^Note:(?P<note>.*)$")
 _REVIEW_HDR_RE = re.compile(r"^<!-- review (?P<json>\{.*\}) -->\s*$")
 
 
@@ -635,7 +638,7 @@ def _default_add(e: Entry) -> str:
 def render_review_block(n: int, e: Entry, dirs: Dirs, *, expected_hash: str | None = None,
                         changed_note: str = "", add: str | None = None,
                         section: str | None = None,
-                        twins: list[tuple[str, str]] | None = None) -> str:
+                        twins: list[tuple[str, str]] | None = None, note: str = "") -> str:
     tp = resolve_target(e.target, dirs)
     h = expected_hash if expected_hash is not None else (sha(tp) if tp else "unresolved")
     hdr = json.dumps({"key": e.key, "target": e.target, "hash": h}, sort_keys=True)
@@ -662,6 +665,7 @@ def render_review_block(n: int, e: Entry, dirs: Dirs, *, expected_hash: str | No
         "```text",
         add if add is not None else _default_add(e),
         "```",
+        f"Note: {note}".rstrip(),
         "- [ ] yes",
         "- [ ] no",
         "- [ ] later",
@@ -718,6 +722,26 @@ class ReviewItem:
     add: str
     ticks: list[str]
     result: str
+    note: str = ""
+
+
+def read_note(lines: list[str]) -> str:
+    """The user's note in one review block, outside any fenced text."""
+    notes, fence = [], False
+    for l in lines:
+        if l.strip().startswith("```"):
+            fence = not fence
+            continue
+        m = None if fence else _NOTE_RE.match(l)
+        if m and m.group("note").strip():
+            notes.append(m.group("note").strip())
+    return " ".join(notes)
+
+
+def keep_note(entry: Entry, note: str) -> None:
+    """Record *note* on the entry. Repeated runs do not repeat it."""
+    if note and note not in entry.meta.setdefault("notes", []):
+        entry.meta["notes"].append(note)
 
 
 def parse_review(text: str) -> list[ReviewItem]:
@@ -748,7 +772,8 @@ def parse_review(text: str) -> list[ReviewItem]:
             if l.startswith("Result:"):
                 result = l[len("Result:"):].strip()
         items.append(ReviewItem(s, nxt, j["key"], j["target"], j["hash"], section,
-                                "\n".join(add_lines).rstrip("\n"), ticks, result))
+                                "\n".join(add_lines).rstrip("\n"), ticks, result,
+                                read_note(lines[s:nxt])))
     return items
 
 
@@ -826,21 +851,33 @@ def apply_review(path: Path, store: Store, dirs: Dirs, *, today: str,
         item = _refind(text, snap.key) or snap
         if item.result:
             continue
+        qp = store.queue_path(item.target)
         if not item.ticks or item.ticks == ["later"]:
+            # A note on an entry left waiting is kept with it, so it is not lost
+            # when tomorrow's review file replaces this one.
+            if item.note:
+                entries = store.read(qp)
+                found = next((e for e in entries if e.key == item.key), None)
+                if found is not None and item.note not in found.meta.get("notes", []):
+                    keep_note(found, item.note)
+                    store.write(qp, entries)
             continue
         if len(item.ticks) > 1:
             rep.left.append((label, "more than one box ticked"))
             continue
         choice = item.ticks[0]
-        qp = store.queue_path(item.target)
         entries = store.read(qp)
         entry = next((e for e in entries if e.key == item.key), None)
         if entry is None:
             rep.left.append((label, "no longer in its queue"))
             continue
+        if item.note:
+            keep_note(entry, item.note)
+            store.write(qp, entries)
 
         if choice == "no":
-            store.move(item.key, qp, store.rejected_path, reason=f"said no on {today}")
+            reason = f"said no on {today}" + (f": {item.note}" if item.note else "")
+            store.move(item.key, qp, store.rejected_path, reason=reason)
             text = _set_result(text, item, f"rejected {today}")
             rep.rejected.append(label)
             continue
@@ -862,7 +899,7 @@ def apply_review(path: Path, store: Store, dirs: Dirs, *, today: str,
                 0, entry, dirs,
                 changed_note=f"{tp.name} changed after this review was written. "
                              "Check the edit below, then tick again.",
-                add=item.add, section=item.section,
+                add=item.add, section=item.section, note=item.note,
             ).replace("### 0.", f"### {number}.", 1)
             lines = text.splitlines()
             text = "\n".join(lines[:item.start] + fresh.splitlines() + [""] + lines[item.end:]) + "\n"

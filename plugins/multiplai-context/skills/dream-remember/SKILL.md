@@ -30,6 +30,9 @@ including every `left` line and its reason.
 - **Facts part.** `yes` applies the entry and moves it to `archived/applied.md`. `no`
   moves it to `archived/rejected.md`.
 - `later` and no tick leave everything where it is.
+- **Notes.** Text after `Note:` under any item is kept: as the reason on a `no`,
+  with the examples on a principle `yes`, and with the item on `later`. The next
+  principles call shows the model the newest notes.
 
 If it reports a target file changed, the review file now shows the new edit under a
 `CHANGED:` line with the boxes cleared. Tell the user to check it and tick again.

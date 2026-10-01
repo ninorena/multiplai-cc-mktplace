@@ -348,3 +348,60 @@ def test_the_router_skips_both_principles_files_in_both_places():
 def test_the_module_never_deletes():
     src = Path(pr.__file__).read_text()
     assert "unlink" not in src and "rmtree" not in src and "os.remove" not in src
+
+
+# ---------------------------------------------------------------- notes
+
+
+def note_principle(path, heading, text):
+    parts = re.split(r"(?m)^(?=### )", path.read_text())
+    for i, p in enumerate(parts):
+        if p.startswith(f"### {heading}"):
+            parts[i] = p.replace("Note:\n", f"Note: {text}\n", 1)
+    path.write_text("".join(parts))
+
+
+class TestNotes:
+    def test_a_note_on_no_reaches_the_rejected_list_and_the_model(self, run):
+        dream, dirs, store, go = run
+        seed(dirs, CHECK + OTHER)
+        path = go(model_answer([CHECK_P]))
+        note_principle(path, "Principle A", "too broad")
+        tick_principle(path, "Principle A", "no")
+        dream._daily_apply(None, TODAY)
+        assert f"{CHECK_P[0]} (said no on {TODAY}: too broad)" in pr.rejected_principles_path(store).read_text()
+        ask = model_answer()
+        go(ask, TOMORROW)
+        assert "too broad" in ask.calls[0]
+
+    def test_a_note_on_later_comes_back_with_the_principle(self, run):
+        dream, dirs, store, go = run
+        seed(dirs, CHECK + OTHER)
+        path = go(model_answer([CHECK_P]))
+        note_principle(path, "Principle A", "add a callout")
+        dream._daily_apply(None, TODAY)
+        seed(dirs, ["uses tmux windows per agent", "likes short replies", "works in pacific time"], name="b.md")
+        ask = model_answer()
+        path2 = go(ask, TOMORROW)
+        assert "Earlier note: add a callout" in path2.read_text()
+        assert "add a callout" in ask.calls[0]
+
+    def test_a_note_on_yes_is_kept_with_the_examples(self, run):
+        dream, dirs, store, go = run
+        seed(dirs, CHECK)
+        path = go(model_answer([CHECK_P]))
+        note_principle(path, "Principle A", "close to my view")
+        tick_principle(path, "Principle A", "yes")
+        dream._daily_apply(None, TODAY)
+        assert "- Nick's note: close to my view" in (dirs.memory / pr.EXAMPLES).read_text()
+
+    def test_a_note_on_a_single_learning_reaches_the_model(self, run):
+        dream, dirs, store, go = run
+        seed(dirs, OTHER + ["uses tmux windows per agent", "likes short replies", "works in pacific time"])
+        path = go(model_answer())
+        text = path.read_text()
+        path.write_text(text.replace("Note:\n", "Note: too specific for this file\n", 1).replace("- [ ] no", "- [x] no", 1))
+        dream._daily_apply(None, TODAY)
+        ask = model_answer()
+        go(ask, TOMORROW)
+        assert "too specific for this file" in ask.calls[0]
