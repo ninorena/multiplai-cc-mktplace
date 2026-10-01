@@ -3269,7 +3269,8 @@ def _propose_principles(store, dirs, pending: list, today: str) -> list:
     if room <= 0 or len(entries) < principles.MIN_ENTRIES:
         return []
     book = principles.read_book(dirs.memory)
-    prompt, idmap = principles.build_prompt(entries, book, principles.rejected_sentences(store))
+    prompt, idmap = principles.build_prompt(entries, book, principles.rejected_sentences(store),
+                                            principles.feedback_notes(store, pending))
     answer = asyncio.run(_ask_for_principles(prompt))
     # The client returns text only, so size is the only cost measure here.
     print(f"Principles call: {len(entries)} learning(s), prompt {len(principles.SYSTEM) + len(prompt)} "

@@ -833,3 +833,67 @@ class TestTwinsUnderOtherTargets:
     def test_the_same_target_is_not_a_twin(self):
         a = dr.Entry(line="- x", meta={"key": "k1", "target": "me.md"})
         assert not dr.is_twin(a, dr.Entry(line="- x", meta={"key": "k2", "target": "me.md"}))
+
+
+# ---------------------------------------------------------------- notes
+
+
+def note(path, n, text):
+    """Write *text* on the Note line of the n-th fact (1-based)."""
+    parts = re.split(r"(?m)^(?=### \d+\.)", path.read_text())
+    parts[n] = parts[n].replace("Note:\n", f"Note: {text}\n", 1)
+    path.write_text("".join(parts))
+
+
+class TestNotes:
+    def test_every_fact_block_has_an_empty_note_line(self, env):
+        dirs, store = env
+        path = review_for(dirs, store, n=2)
+        assert path.read_text().count("\nNote:\n") == 2
+
+    def test_a_note_on_no_is_the_stored_reason(self, env):
+        dirs, store = env
+        path = review_for(dirs, store, n=1)
+        note(path, 1, "too specific for this file")
+        tick(path, 1, "no")
+        dr.apply_review(path, store, dirs, today=TODAY)
+        e = store.read(store.rejected_path)[0]
+        assert e.meta["reason"] == f"said no on {TODAY}: too specific for this file"
+        assert e.meta["notes"] == ["too specific for this file"]
+
+    def test_a_note_on_later_stays_with_the_entry_once(self, env):
+        dirs, store = env
+        path = review_for(dirs, store, n=1)
+        note(path, 1, "ask me again after the site launch")
+        dr.apply_review(path, store, dirs, today=TODAY)
+        dr.apply_review(path, store, dirs, today=TODAY)
+        assert store.queue("me.md")[0].meta["notes"] == ["ask me again after the site launch"]
+
+    def test_a_note_on_yes_is_kept_in_applied(self, env):
+        dirs, store = env
+        path = review_for(dirs, store, n=1)
+        note(path, 1, "good one")
+        tick(path, 1, "yes")
+        dr.apply_review(path, store, dirs, today=TODAY)
+        assert store.read(store.applied_path)[0].meta["notes"] == ["good one"]
+
+    def test_the_learnings_own_suggestion_is_not_a_note(self, env):
+        dirs, store = env
+        path = review_for(dirs, store, n=1)
+        assert "Note (not written): do it" in path.read_text()
+        assert dr.parse_review(path.read_text())[0].note == ""
+
+    def test_a_note_line_inside_the_add_text_is_not_a_note(self, env):
+        dirs, store = env
+        path = review_for(dirs, store, n=1)
+        path.write_text(path.read_text().replace("```text\n", "```text\nNote: this is file text\n", 1))
+        assert dr.parse_review(path.read_text())[0].note == ""
+
+    def test_a_redrawn_block_keeps_the_note(self, env):
+        dirs, store = env
+        path = review_for(dirs, store, n=1)
+        note(path, 1, "keep me")
+        tick(path, 1, "yes")
+        (dirs.memory / "me.md").write_text("# me\n\n## Notes\n- changed\n")
+        dr.apply_review(path, store, dirs, today=TODAY)
+        assert "CHANGED:" in path.read_text() and "Note: keep me" in path.read_text()
