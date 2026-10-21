@@ -12,6 +12,15 @@ Recorded history starts at **0.1.2**; anything earlier is in `git log` only.
 
 `multiplai-messaging@0.1.1` predates this file and has no section here.
 
+## [Unreleased]
+
+### Added
+
+- **`get_token.py --readonly`** mints a Gmail credential with `gmail.readonly`
+  alone. Search and read work; draft fails, and the token itself cannot send or
+  change mail. Without the flag, the script asks for compose and readonly as
+  before.
+
 ## [0.3.2] - 2026-08-16
 
 ### Changed

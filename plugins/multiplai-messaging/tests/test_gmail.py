@@ -294,6 +294,11 @@ class TestAssertScopes:
         _patch_tokeninfo(monkeypatch, gmail, scope=gmail.SCOPE_COMPOSE)
         assert gmail._assert_scopes(_Creds()) is None
 
+    def test_only_readonly_proceeds(self, gmail, monkeypatch):
+        # The credential get_token.py --readonly mints.
+        _patch_tokeninfo(monkeypatch, gmail, scope=gmail.SCOPE_READONLY)
+        assert gmail._assert_scopes(_Creds()) is None
+
     def test_extra_send_scope_aborts(self, gmail, monkeypatch):
         broad = (f"{gmail.SCOPE_COMPOSE} {gmail.SCOPE_READONLY} "
                  "https://www.googleapis.com/auth/gmail.send")

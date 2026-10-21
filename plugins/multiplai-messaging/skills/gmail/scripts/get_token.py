@@ -7,6 +7,8 @@ redirect. Both live on the Mac, not inside the Docker container.
 What it does:
   * Runs the OAuth InstalledApp flow against your Desktop OAuth client secret.
   * Requests exactly two scopes: gmail.compose + gmail.readonly (nothing else).
+    With --readonly it requests gmail.readonly alone: search and read work,
+    draft fails, and the token itself cannot send or change mail.
   * PRINTS the long-lived credential as three env vars for you to paste into the
     kit's .env — mirroring how SLACK_TOKEN works. Google's credential is a trio
     (client id + secret + refresh token), not one bearer string, because access
@@ -15,6 +17,9 @@ What it does:
 Usage (recommended, via uv — resolves deps automatically):
   uv run get_token.py /path/to/client_secret.json
   → prints GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET / GMAIL_REFRESH_TOKEN
+
+Read-only credential (no drafts):
+  uv run get_token.py client_secret.json --readonly
 
 Optional: also write a JSON token file (for the GMAIL_TOKEN_FILE fallback path):
   uv run get_token.py client_secret.json --out /abs/path/token.json
@@ -28,10 +33,9 @@ import stat
 import sys
 from pathlib import Path
 
-SCOPES = [
-    "https://www.googleapis.com/auth/gmail.compose",
-    "https://www.googleapis.com/auth/gmail.readonly",
-]
+SCOPE_COMPOSE = "https://www.googleapis.com/auth/gmail.compose"
+SCOPE_READONLY = "https://www.googleapis.com/auth/gmail.readonly"
+SCOPES = [SCOPE_COMPOSE, SCOPE_READONLY]
 
 
 def main() -> int:
@@ -41,7 +45,11 @@ def main() -> int:
     ap.add_argument("--out", default=None,
                     help="also write the credential as a JSON token file at this "
                     "path (for the GMAIL_TOKEN_FILE fallback); default: env-only")
+    ap.add_argument("--readonly", action="store_true",
+                    help="request gmail.readonly only: search and read work, "
+                    "draft does not")
     args = ap.parse_args()
+    scopes = [SCOPE_READONLY] if args.readonly else SCOPES
 
     if not os.path.isfile(args.client_secret):
         print(f"error: client secret not found: {args.client_secret}",
@@ -56,17 +64,17 @@ def main() -> int:
               "  pip install google-auth-oauthlib", file=sys.stderr)
         return 1
 
-    flow = InstalledAppFlow.from_client_secrets_file(args.client_secret, SCOPES)
+    flow = InstalledAppFlow.from_client_secrets_file(args.client_secret, scopes)
     # Opens the browser, listens on a free localhost port for the redirect.
     creds = flow.run_local_server(port=0, prompt="consent")
 
     granted = set(creds.scopes or [])
-    extra = granted - set(SCOPES)
+    extra = granted - set(scopes)
     if extra:
-        print("warning: Google granted extra scopes beyond compose+readonly: "
-              + ", ".join(sorted(extra)) + "\nThe skill will REFUSE to run with "
-              "these. Re-consent and grant only the two requested scopes.",
-              file=sys.stderr)
+        print("warning: Google granted scopes beyond those requested: "
+              + ", ".join(sorted(extra)) + "\nThe skill refuses any scope "
+              "beyond compose+readonly. Re-consent and grant only the "
+              "requested scopes.", file=sys.stderr)
 
     client_id = flow.client_config["client_id"]
     client_secret = flow.client_config["client_secret"]
@@ -91,7 +99,10 @@ def main() -> int:
     print(f"GMAIL_CLIENT_SECRET={client_secret}")
     print(f"GMAIL_REFRESH_TOKEN={refresh_token}")
     print("# scopes granted:", ", ".join(sorted(granted)))
-    print("# Then restart the container and ask to draft a reply to confirm.\n")
+    if args.readonly:
+        print("# Then restart the container and ask to search your inbox to confirm.\n")
+    else:
+        print("# Then restart the container and ask to draft a reply to confirm.\n")
 
     # Optional: also drop a JSON token file for the file-fallback path.
     if args.out:
