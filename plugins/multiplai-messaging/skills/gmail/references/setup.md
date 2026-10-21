@@ -25,7 +25,10 @@ compose+readonly and **prints three env vars** — nothing is written to disk:
 uv run --project "<plugin>/skills/gmail/scripts" "<plugin>/skills/gmail/scripts/get_token.py" /path/to/client_secret.json
 ```
 `<plugin>` is the installed multiplai-messaging plugin path (or the repo checkout).
-Approve the two scopes in the browser; it prints:
+For a read-only credential, add `--readonly`: it requests `gmail.readonly`
+alone, so search and read work and draft does not.
+
+Approve the scopes in the browser; it prints:
 
 ```
 GMAIL_CLIENT_ID=...apps.googleusercontent.com
